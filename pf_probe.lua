@@ -1,6 +1,6 @@
 -- PF probe: can the game's bullet code be reached from the normal script environment?
 -- No actor APIs (those crash MacSploit). Read-only: nothing is hooked or changed.
--- Run in a match:  loadstring(readfile("king_hub/pf_probe.lua"))()   then read king_hub/pf_probe.txt
+-- Run in a match:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/pf_probe.lua"))()   then read king_hub/pf_probe.txt
 local out = {}
 local function p(s) out[#out + 1] = tostring(s) end
 

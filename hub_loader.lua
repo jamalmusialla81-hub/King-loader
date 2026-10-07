@@ -1,8 +1,9 @@
 -- =============================================================================
 --  KING HUB  ·  pick a game, the matching script loads.
---  Run:  loadstring(readfile("king_hub/hub_loader.lua"))()
+--  Run:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/hub_loader.lua"))()
 --  K hides / shows the menu. The game you are in is detected and marked, but you can load any card.
---  MY SCRIPTS lists every .lua file in king_hub/scripts/ and loads the one you click.
+--  Everything loads over game:HttpGet from GitHub; no workspace files are used.
+--  MY SCRIPTS lists the entries in EXTRA_SCRIPTS below (name + raw URL) plus MonkeHub.
 -- =============================================================================
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
@@ -12,17 +13,17 @@ local CoreGui          = game:GetService("CoreGui")
 local HttpService      = game:GetService("HttpService")
 local RS               = game:GetService("ReplicatedStorage")
 
+local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/"
+
 local GuiParent = CoreGui
 pcall(function() if gethui then GuiParent = gethui() end end)
-pcall(function() if makefolder and isfolder and not isfolder("king_hub") then makefolder("king_hub") end end)
-pcall(function() if makefolder and isfolder and not isfolder("king_hub/scripts") then makefolder("king_hub/scripts") end end)
 
 if getgenv and getgenv().GAMEHUB_CLOSE then pcall(getgenv().GAMEHUB_CLOSE) end
 
 local GAMES = {
     {
         name = "BLOX STRIKE", icon = "🎯", tag = "Counter-Strike style",
-        path = "king_hub/blox_strike.lua",
+        url = BASE .. "blox_strike.lua",
         features = {"ESP, boxes, chams", "Triggerbot, no flash", "Live grenade lineups", "Skins, bomb timer"},
         detect = function()
             return game.PlaceId == 114234929420007
@@ -31,7 +32,7 @@ local GAMES = {
     },
     {
         name = "PHANTOM FORCES", icon = "🔫", tag = "Military shooter",
-        path = "king_hub/phantom_forces.lua",
+        url = BASE .. "phantom_forces.lua",
         features = {"Box ESP, head dots", "Triggerbot", "Mouse lock-on", "Handles random names"},
         detect = function()
             return game.PlaceId == 292439477
@@ -40,7 +41,7 @@ local GAMES = {
     },
     {
         name = "OPERATION ONE", icon = "🛡", tag = "Tactical shooter",
-        path = "king_hub/operation_one.lua",
+        url = BASE .. "operation_one.lua",
         features = {"ESP, chams", "Triggerbot, silent aim", "No recoil, grenade aim", "Shoots through cover"},
         detect = function()
             return workspace:FindFirstChild("Viewmodels") ~= nil
@@ -49,7 +50,7 @@ local GAMES = {
     },
     {
         name = "SOCCER", icon = "⚽", tag = "Illegal Soccer",
-        path = "king_hub/soccer.lua",
+        url = BASE .. "soccer.lua",
         features = {"Auto dodge, auto tackle", "Auto keeper dives", "Silent corner aim", "Flick to bicycle kick"},
         detect = function()
             return game.PlaceId == 126987974021910
@@ -58,14 +59,18 @@ local GAMES = {
     },
     {
         name = "MY SCRIPTS", icon = "📁", tag = "Your own scripts", library = true,
-        features = {"MonkeHub, one click", "Lists king_hub/scripts", "Click a file to run it", "Drop any .lua in"},
+        features = {"MonkeHub, one click", "Extra scripts by URL", "Click an entry to run it", "Add your own below"},
         detect = function() return false end,
     },
 }
 
 -- other hubs launched as they are (they keep their own name and menu)
 local EXTERNAL = {
-    {name = "MonkeHub", note = "opens it and saves its scripts to king_hub/scripts", path = "king_hub/capture_monkehub.lua"},
+    {name = "MonkeHub", note = "opens it and captures the scripts it loads", url = BASE .. "capture_monkehub.lua"},
+}
+
+-- add your own scripts here as {name = "...", url = "https://raw.githubusercontent.com/..."}
+local EXTRA_SCRIPTS = {
 }
 
 local C = {
@@ -298,17 +303,16 @@ local function flash()
     tw(f, 0.5, {BackgroundTransparency = 1})
     task.delay(0.55, function() pcall(function() f:Destroy() end) end)
 end
-local function runFile(path, label, url)
+local function runFile(label, url)
     if loading then return end
     loading = true
-    say((url and "downloading " or "reading ") .. (url or path), C.teal)
+    say("downloading " .. url, C.teal)
     tw(bar, 0.8, {Size = UDim2.fromScale(0.55, 1)}, Enum.EasingStyle.Quart)
     local okRead, src
-    if url then okRead, src = pcall(function() return game:HttpGet(url) end)
-    else okRead, src = pcall(readfile, path) end
+    okRead, src = pcall(function() return game:HttpGet(url) end)
     task.wait(0.45)
     if not okRead or type(src) ~= "string" or #src == 0 then
-        say((url and "download failed: " or "file not found: ") .. (url or path), C.red)
+        say("download failed: " .. url, C.red)
         tw(bar, 0.2, {Size = UDim2.fromScale(0, 1)})
         loading = false
         return
@@ -383,16 +387,7 @@ local function showLibrary(show)
         for _, c in ipairs(libList:GetChildren()) do
             if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
         end
-        local files = {}
-        pcall(function()
-            if listfiles then
-                for _, f in ipairs(listfiles("king_hub/scripts")) do
-                    local low = tostring(f):lower()
-                    if low:match("%.lua$") or low:match("%.luau$") then files[#files + 1] = f end
-                end
-            end
-        end)
-        table.sort(files)
+        local files = EXTRA_SCRIPTS
         for i, ex in ipairs(EXTERNAL) do
             local b = Instance.new("TextButton", libList)
             b.LayoutOrder = -100 + i
@@ -409,7 +404,7 @@ local function showLibrary(show)
             local bs = stroke(b, C.gold, 1.4, 0.3)
             b.MouseEnter:Connect(function() tw(b, 0.12, {BackgroundColor3 = Color3.fromRGB(44, 36, 14)}); tw(bs, 0.12, {Thickness = 2.2, Transparency = 0}) end)
             b.MouseLeave:Connect(function() tw(b, 0.12, {BackgroundColor3 = Color3.fromRGB(26, 22, 12)}); tw(bs, 0.12, {Thickness = 1.4, Transparency = 0.3}) end)
-            b.MouseButton1Click:Connect(function() runFile(ex.path, ex.name, ex.url) end)
+            b.MouseButton1Click:Connect(function() runFile(ex.name, ex.url) end)
             task.delay(0.05 * i, function() if alive then tw(b, 0.3, {BackgroundTransparency = 0}, Enum.EasingStyle.Back) end end)
         end
         if #files == 0 then
@@ -420,10 +415,10 @@ local function showLibrary(show)
             l.TextSize = 13
             l.TextColor3 = C.dim
             l.TextWrapped = true
-            l.Text = "No scripts yet.\nDrop any .lua file into king_hub/scripts/ and reopen the hub."
+            l.Text = "No extra scripts yet.\nAdd {name, url} entries to EXTRA_SCRIPTS at the top of hub_loader.lua."
         end
         for i, f in ipairs(files) do
-            local name = tostring(f):match("([^/\\]+)$") or tostring(f)
+            local name = f.name
             local b = Instance.new("TextButton", libList)
             b.Size = UDim2.new(1, -8, 0, 40)
             b.BackgroundColor3 = C.panel
@@ -438,7 +433,7 @@ local function showLibrary(show)
             local bs = stroke(b, C.tealDim, 1, 0.6)
             b.MouseEnter:Connect(function() tw(b, 0.12, {BackgroundColor3 = Color3.fromRGB(18, 40, 46)}); tw(bs, 0.12, {Color = C.tealBright, Transparency = 0.1}) end)
             b.MouseLeave:Connect(function() tw(b, 0.12, {BackgroundColor3 = C.panel}); tw(bs, 0.12, {Color = C.tealDim, Transparency = 0.6}) end)
-            b.MouseButton1Click:Connect(function() runFile(f, name) end)
+            b.MouseButton1Click:Connect(function() runFile(name, f.url) end)
             task.delay(0.05 * i, function() if alive then tw(b, 0.3, {BackgroundTransparency = 0}, Enum.EasingStyle.Back) end end)
         end
         libPage.Visible = true
@@ -448,7 +443,7 @@ local function showLibrary(show)
         for _, ch in ipairs(cardsHolder:GetChildren()) do
             if ch:IsA("CanvasGroup") then tw(ch, 0.25, {GroupTransparency = 1}) end
         end
-        say("my scripts: " .. #files .. " files + " .. #EXTERNAL .. " external hub", C.teal)
+        say("my scripts: " .. #files .. " extra + " .. #EXTERNAL .. " external hub", C.teal)
     else
         tw(libPage, 0.25, {GroupTransparency = 1})
         task.delay(0.26, function() libPage.Visible = false end)
@@ -600,7 +595,7 @@ local function makeCard(g, index)
         ripple()
         tw(card, 0.08, {Size = UDim2.fromOffset(CARD_W - 8, CARD_H - 10)})
         task.delay(0.1, function() if alive then tw(card, 0.2, {Size = UDim2.fromOffset(CARD_W, CARD_H)}, Enum.EasingStyle.Back) end end)
-        if g.library then showLibrary(true) else runFile(g.path, g.name) end
+        if g.library then showLibrary(true) else runFile(g.name, g.url) end
     end
     btn.MouseButton1Click:Connect(activate)
 
