@@ -1,0 +1,12 @@
+# logs, dumps and personal settings stay local
+*_log.txt
+*.json
+soccer_dump.txt
+soccer_modules.txt
+soccer_others.txt
+soccer_probe.txt
+pf_probe.txt
+op1_norecoil.txt
+compile_check.txt
+*.bak
+scripts/
