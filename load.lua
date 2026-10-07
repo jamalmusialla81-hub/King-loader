@@ -1,22 +1,24 @@
 -- KING HUB auto loader: detects the game you are in and runs the matching script.
 -- Anything else that is running is unloaded first. If the game isn't recognised, the hub menu opens instead.
--- Run:  loadstring(readfile("king_hub/load.lua"))()
+-- Run:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/load.lua"))()
+-- Everything is fetched over HttpGet from GitHub, so no workspace files are needed (MacSploit and Xeno both work).
 local RS = game:GetService("ReplicatedStorage")
+local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/"
 
 local GAMES = {
-    {name = "Blox Strike", path = "king_hub/blox_strike.lua", detect = function()
+    {name = "Blox Strike", path = "blox_strike.lua", detect = function()
         return game.PlaceId == 114234929420007
             or (RS:FindFirstChild("Assets") ~= nil and RS.Assets:FindFirstChild("Skins") ~= nil and RS:FindFirstChild("NetworkRemotes") ~= nil)
     end},
-    {name = "Phantom Forces", path = "king_hub/phantom_forces.lua", detect = function()
+    {name = "Phantom Forces", path = "phantom_forces.lua", detect = function()
         return game.PlaceId == 292439477
             or (RS:FindFirstChild("ReadyEvent") ~= nil and RS:FindFirstChild("PlayerDataEvent") ~= nil)
     end},
-    {name = "Operation One", path = "king_hub/operation_one.lua", detect = function()
+    {name = "Operation One", path = "operation_one.lua", detect = function()
         return workspace:FindFirstChild("Viewmodels") ~= nil
             or (RS:FindFirstChild("Modules") ~= nil and RS.Modules:FindFirstChild("Items") ~= nil)
     end},
-    {name = "Soccer", path = "king_hub/soccer.lua", detect = function()
+    {name = "Soccer", path = "soccer.lua", detect = function()
         return game.PlaceId == 126987974021910
             or (RS:FindFirstChild("Modules") ~= nil and RS.Modules:FindFirstChild("Ball") ~= nil and RS.Modules:FindFirstChild("Actions") ~= nil)
             or (RS:FindFirstChild("Modules") ~= nil and RS.Modules:FindFirstChild("Gameplay") ~= nil and RS.Modules.Gameplay:FindFirstChild("Keybinds") ~= nil)
@@ -24,8 +26,8 @@ local GAMES = {
 }
 
 local function run(path)
-    local ok, src = pcall(readfile, path)
-    if not ok or not src then warn("[KING] can't read " .. path) return false end
+    local ok, src = pcall(function() return game:HttpGet(BASE .. path) end)
+    if not ok or type(src) ~= "string" or #src == 0 then warn("[KING] can't download " .. path) return false end
     local fn, err = loadstring(src)
     if not fn then warn("[KING] " .. path .. " failed to compile: " .. tostring(err)) return false end
     local ok2, err2 = pcall(fn)
@@ -49,4 +51,4 @@ for _, g in ipairs(GAMES) do
     end
 end
 print("[KING] game not recognised, opening the hub")
-run("king_hub/hub_loader.lua")
+run("hub_loader.lua")

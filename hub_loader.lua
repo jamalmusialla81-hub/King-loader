@@ -1,6 +1,6 @@
 -- =============================================================================
 --  KING HUB  ·  pick a game, the matching script loads.
---  Run:  loadstring(readfile("king_hub/hub_loader.lua"))()
+--  Run:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/hub_loader.lua"))()
 --  K hides / shows the menu. The game you are in is detected and marked, but you can load any card.
 --  MY SCRIPTS lists every .lua file in king_hub/scripts/ and loads the one you click.
 -- =============================================================================
@@ -12,6 +12,8 @@ local CoreGui          = game:GetService("CoreGui")
 local HttpService      = game:GetService("HttpService")
 local RS               = game:GetService("ReplicatedStorage")
 
+local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/"
+
 local GuiParent = CoreGui
 pcall(function() if gethui then GuiParent = gethui() end end)
 pcall(function() if makefolder and isfolder and not isfolder("king_hub") then makefolder("king_hub") end end)
@@ -22,7 +24,7 @@ if getgenv and getgenv().GAMEHUB_CLOSE then pcall(getgenv().GAMEHUB_CLOSE) end
 local GAMES = {
     {
         name = "BLOX STRIKE", icon = "🎯", tag = "Counter-Strike style",
-        path = "king_hub/blox_strike.lua",
+        url = BASE .. "blox_strike.lua",
         features = {"ESP, boxes, chams", "Triggerbot, no flash", "Live grenade lineups", "Skins, bomb timer"},
         detect = function()
             return game.PlaceId == 114234929420007
@@ -31,7 +33,7 @@ local GAMES = {
     },
     {
         name = "PHANTOM FORCES", icon = "🔫", tag = "Military shooter",
-        path = "king_hub/phantom_forces.lua",
+        url = BASE .. "phantom_forces.lua",
         features = {"Box ESP, head dots", "Triggerbot", "Mouse lock-on", "Handles random names"},
         detect = function()
             return game.PlaceId == 292439477
@@ -40,7 +42,7 @@ local GAMES = {
     },
     {
         name = "OPERATION ONE", icon = "🛡", tag = "Tactical shooter",
-        path = "king_hub/operation_one.lua",
+        url = BASE .. "operation_one.lua",
         features = {"ESP, chams", "Triggerbot, silent aim", "No recoil, grenade aim", "Shoots through cover"},
         detect = function()
             return workspace:FindFirstChild("Viewmodels") ~= nil
@@ -49,7 +51,7 @@ local GAMES = {
     },
     {
         name = "SOCCER", icon = "⚽", tag = "Illegal Soccer",
-        path = "king_hub/soccer.lua",
+        url = BASE .. "soccer.lua",
         features = {"Auto dodge, auto tackle", "Auto keeper dives", "Silent corner aim", "Flick to bicycle kick"},
         detect = function()
             return game.PlaceId == 126987974021910
@@ -65,7 +67,7 @@ local GAMES = {
 
 -- other hubs launched as they are (they keep their own name and menu)
 local EXTERNAL = {
-    {name = "MonkeHub", note = "opens it and saves its scripts to king_hub/scripts", path = "king_hub/capture_monkehub.lua"},
+    {name = "MonkeHub", note = "opens it and saves its scripts to king_hub/scripts", url = BASE .. "capture_monkehub.lua"},
 }
 
 local C = {
@@ -600,7 +602,7 @@ local function makeCard(g, index)
         ripple()
         tw(card, 0.08, {Size = UDim2.fromOffset(CARD_W - 8, CARD_H - 10)})
         task.delay(0.1, function() if alive then tw(card, 0.2, {Size = UDim2.fromOffset(CARD_W, CARD_H)}, Enum.EasingStyle.Back) end end)
-        if g.library then showLibrary(true) else runFile(g.path, g.name) end
+        if g.library then showLibrary(true) else runFile(g.path, g.name, g.url) end
     end
     btn.MouseButton1Click:Connect(activate)
 

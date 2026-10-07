@@ -1,14 +1,13 @@
 -- Executor check: which functions do the KING HUB scripts need, and which does YOUR executor have?
--- Run:  loadstring(readfile("king_hub/check_exec.lua"))()      (or paste this whole file into the executor)
--- Writes king_hub/exec_check.txt and prints the result. Read-only: nothing is hooked or changed.
+-- Run:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/check_exec.lua"))()      (or paste this whole file into the executor)
+-- Prints the result (and saves king_hub/exec_check.txt if the executor has writefile). Read-only: nothing is hooked or changed.
 local g = (getgenv and getgenv()) or _G
 local function has(name) local v = g[name]; if v == nil then v = rawget(_G, name) end; return v ~= nil end
 
 local NEED = {
-    {"readfile", "everything: loads scripts and saves settings"},
-    {"writefile", "logs and configs"},
-    {"appendfile", "logs (falls back to writefile)"},
-    {"isfile", "configs"}, {"isfolder", "configs"}, {"makefolder", "configs"},
+    {"writefile", "optional: logs and saved configs"},
+    {"appendfile", "optional: logs (falls back to writefile)"},
+    {"isfile", "optional: configs"}, {"isfolder", "optional: configs"}, {"makefolder", "optional: configs"},
     {"loadstring", "loader"},
     {"getgenv", "unload / one-script-at-a-time"},
     {"gethui", "menus (falls back to CoreGui)"},
@@ -41,7 +40,11 @@ end
 try("Drawing.new Square", function() local d = Drawing.new("Square"); d:Remove() end)
 try("VirtualInputManager", function() game:GetService("VirtualInputManager") end)
 try("Highlight instance", function() Instance.new("Highlight"):Destroy() end)
-try("write + read file", function()
+try("game:HttpGet (GitHub raw)", function()
+    local src = game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/load.lua")
+    assert(type(src) == "string" and #src > 0, "empty response")
+end)
+try("write + read file (optional)", function()
     writefile("king_hub_test.txt", "x"); assert(readfile("king_hub_test.txt") == "x")
     if delfile then delfile("king_hub_test.txt") end
 end)
@@ -51,7 +54,7 @@ if #missing == 0 then
     lines[#lines + 1] = "verdict: everything the scripts use is present."
 else
     lines[#lines + 1] = "verdict: missing " .. table.concat(missing, ", ")
-    lines[#lines + 1] = "Soccer, Phantom Forces and Blox Strike mostly need only the file functions, Drawing and gethui."
+    lines[#lines + 1] = "Soccer, Phantom Forces and Blox Strike mostly need only Drawing and gethui (file functions are optional, used for logs and saved configs)."
     lines[#lines + 1] = "Operation One's silent aim and no-recoil need getactors + run_on_actor."
 end
 
