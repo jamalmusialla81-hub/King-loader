@@ -1455,11 +1455,25 @@ local function setSkeletonESP(on)
 
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr == LocalPlayer then continue end
-                local holder = getSkeletonHolderFor(plr)
-                holder.Visible = false
+                Features.SkelHolders = Features.SkelHolders or {}
+                local holder = Features.SkelHolders[plr]
+                if not holder or not holder.Parent then holder = getSkeletonHolderFor(plr); Features.SkelHolders[plr] = holder end
                 local char = plr.Character
-                if not char or not IsAlive(plr) then continue end
-                if IsTeammate(plr) and not isCarrier(plr) then continue end
+                -- cheap checks first: skip the whole 14-bone projection for players that can't be seen
+                -- (culled characters are frozen at their last position, so a skeleton there would be wrong)
+                local show = false
+                if char and char.Parent and char.Parent.Name ~= "_PVS_CulledCharacters" and IsAlive(plr)
+                    and (not IsTeammate(plr) or isCarrier(plr)) then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local rp, on = cam:WorldToViewportPoint(hrp.Position)
+                        show = on and rp.Z > 0
+                    end
+                end
+                if not show then
+                    if holder.Visible then holder.Visible = false end
+                    continue
+                end
 
                 local col = getESPColorFor(plr)
                 local cache = {}
@@ -1498,7 +1512,7 @@ local function setSkeletonESP(on)
                         end
                     end
                 end
-                if anyVisible then holder.Visible = true end
+                holder.Visible = anyVisible
             end
         end)
     else
@@ -4672,6 +4686,7 @@ shared.MH_Try('Box ESP + gun chams', function()
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LocalPlayer and IsAlive(plr) and not IsTeammate(plr) then
                     local ch = plr.Character
+                    local stale = ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters"   -- frozen at the last position the game sent
                     local head = ch and ch:FindFirstChild("Head")
                     local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
                     if head and hrp then
@@ -4682,6 +4697,11 @@ shared.MH_Try('Box ESP + gun chams', function()
                             if h >= 6 then
                                 local w = h * 0.55
                                 local f = boxes[plr] or makeBox(plr)
+                                local st = f:FindFirstChildOfClass("UIStroke")
+                                if st then
+                                    st.Color = stale and Color3.fromRGB(255, 160, 40) or Color3.fromRGB(255, 60, 60)
+                                    st.Transparency = stale and 0.6 or 0
+                                end
                                 f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
                                 f.Size = UDim2.fromOffset(w, h)
                                 f.Visible = true
