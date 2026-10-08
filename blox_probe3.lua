@@ -28,21 +28,27 @@ if not folder then p("no ReplicatedStorage.MovementV2Remotes found") else
     local names = {}
     for _, c in ipairs(folder:GetChildren()) do names[#names + 1] = c.Name .. "(" .. c.ClassName .. ")" end
     p("MovementV2Remotes contains: " .. table.concat(names, ", "))
-    local rem = folder:FindFirstChild("RemoteSnapshot")
-    if not (rem and rem:IsA("RemoteEvent")) then p("RemoteSnapshot is not a RemoteEvent: " .. tostring(rem and rem.ClassName)) else
-        local shown, total, t0 = 0, 0, os.clock()
-        local conn = rem.OnClientEvent:Connect(function(...)
-            total += 1
-            if shown < 8 then
-                shown += 1
+    local function listen(remName)
+        local rem = folder:FindFirstChild(remName)
+        if not (rem and (rem:IsA("RemoteEvent") or rem:IsA("UnreliableRemoteEvent"))) then p(remName .. " missing or not a remote: " .. tostring(rem and rem.ClassName)) return nil end
+        local st = {shown = 0, total = 0, t0 = os.clock(), name = remName}
+        st.conn = rem.OnClientEvent:Connect(function(...)
+            st.total += 1
+            if st.shown < 6 then
+                st.shown += 1
                 local a = {}
                 for i = 1, select("#", ...) do a[i] = fmt((select(i, ...))) end
-                p(string.format("event %d args(%d): %s", shown, select("#", ...), table.concat(a, " | ")))
+                p(string.format("%s event %d args(%d): %s", remName, st.shown, select("#", ...), table.concat(a, " | ")))
             end
         end)
-        task.wait(4)
-        conn:Disconnect()
-        p(string.format("received %d events in %.1fs (%.1f/s)", total, os.clock() - t0, total / (os.clock() - t0)))
+        return st
+    end
+    local watchers = {}
+    for _, n in ipairs({"RemoteSnapshot", "OwnerSnapshot"}) do local w = listen(n) if w then watchers[#watchers + 1] = w end end
+    task.wait(4)
+    for _, st in ipairs(watchers) do
+        st.conn:Disconnect()
+        p(string.format("%s: received %d events in %.1fs (%.1f/s)", st.name, st.total, os.clock() - st.t0, st.total / (os.clock() - st.t0)))
     end
 end
 pcall(function() if makefolder and not isfolder("king_hub") then makefolder("king_hub") end end)
