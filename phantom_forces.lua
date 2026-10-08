@@ -1,6 +1,6 @@
 -- =============================================================================
 --  PHANTOM FORCES  ·  box ESP, triggerbot, mouse lock-on
---  Display + mouse input only. Nothing is sent to the server and no game code is hooked.
+--  Display + mouse input, plus an optional silent aim that wraps the bullet module (no actor APIs).
 --  Phantom Forces renames everything and has no Roblox characters, so players are read from
 --  workspace.Players.<team folder>.<model>: the NameTagGui / PlayerTag label gives the name and the
 --  part it hangs on is the head. Models are rebuilt constantly, so nothing is cached by reference.
@@ -57,6 +57,7 @@ local Cfg = {
     Trigger = true, TriggerDelay = 0.0, TriggerRange = 1000, TriggerWallCheck = true, TriggerHeadOnly = false,
     Aim = true, AimFov = 180, AimRange = 250, AimSmooth = 0.35, AimVisible = true, AimHuman = 70,
     AimPart = 1, AimSticky = true, AimMaxStep = 40,
+    Silent = false, SilentFov = 250, SilentWall = true,
     -- esp extras
     BoxMode = 1, BoxColor = 1, NameColor = 3, DistColor = 3, EspVisOnly = false, VisTint = true,
     Chams = false, ChamsColor = 1, ChamsFill = 0.6,
@@ -637,6 +638,114 @@ do
     end)
 end
 
+-- ---------------------------------------------------------------- silent aim (no actor APIs)
+-- Phantom Forces runs its gun code on the main thread, so getactors / run_on_actor are not needed.
+-- The bullet module is found in the garbage collector (table with a newBullet function) and newBullet is
+-- wrapped: the velocity of each bullet is re-pointed at the best target near the crosshair, keeping its speed.
+-- The camera and the mouse are not touched. If the module can't be found, the log says so and the
+-- mouse lock-on above still works.
+local silent = {mod = nil, orig = nil, hooked = false, shots = 0, dumped = 0}
+local function silentTarget()
+    local origin = camera.CFrame.Position
+    local c = camera.ViewportSize / 2
+    local best, bestD
+    for _, e in ipairs(cachedEnemies) do
+        local pt = aimPointOf(e)
+        local sp, on = camera:WorldToViewportPoint(pt)
+        if on and sp.Z > 0 and (pt - origin).Magnitude <= Cfg.AimRange * 2 then
+            local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+            if d <= Cfg.SilentFov and (not bestD or d < bestD) and (not Cfg.SilentWall or worldClear(pt)) then best, bestD = pt, d end
+        end
+    end
+    return best
+end
+local function redirect(v, from, to)
+    if typeof(v) ~= "Vector3" or v.Magnitude < 1 then return v end
+    return (to - from).Unit * v.Magnitude
+end
+local function rewriteShot(data)
+    if type(data) ~= "table" then return end
+    local from = data.firepos or data.position or data.origin
+    if typeof(from) ~= "Vector3" then from = camera.CFrame.Position end
+    local tgt = silentTarget()
+    if silent.dumped < 3 then
+        silent.dumped += 1
+        local keys = {}
+        for k, v in pairs(data) do keys[#keys + 1] = tostring(k) .. ":" .. typeof(v) end
+        log("silent: newBullet arg {" .. table.concat(keys, ", ") .. "} target=" .. tostring(tgt))
+    end
+    if not tgt then return end
+    local list = data.bullets or data
+    local changed = 0
+    for i, b in pairs(list) do
+        if typeof(b) == "Vector3" then
+            list[i] = redirect(b, from, tgt); changed += 1
+        elseif type(b) == "table" then
+            if typeof(b[1]) == "Vector3" then b[1] = redirect(b[1], from, tgt); changed += 1
+            elseif typeof(b.velocity) == "Vector3" then b.velocity = redirect(b.velocity, from, tgt); changed += 1 end
+        end
+    end
+    if typeof(data.velocity) == "Vector3" then data.velocity = redirect(data.velocity, from, tgt); changed += 1 end
+    silent.shots += changed
+    if changed == 0 and silent.dumped < 6 then silent.dumped += 1; log("silent: bullet layout not recognised") end
+end
+local function findBulletModule()
+    local ok, gc = pcall(getgc, true)
+    if not ok or type(gc) ~= "table" then return end
+    for i, v in ipairs(gc) do
+        if i % 20000 == 0 then task.wait() end
+        if type(v) == "table" and type(rawget(v, "newBullet")) == "function" then return v end
+    end
+end
+local function hookBullets()
+    local mod = findBulletModule()
+    if not mod then return false end
+    local orig = rawget(mod, "newBullet")
+    silent.mod, silent.orig = mod, orig
+    local function wrapped(...)
+        if Cfg.Silent then
+            local args = {...}
+            local data
+            for i = 1, select("#", ...) do if type(args[i]) == "table" then data = args[i] break end end
+            pcall(rewriteShot, data)
+        end
+        return orig(...)
+    end
+    silent.wrapped = wrapped
+    local ok = pcall(function() mod.newBullet = wrapped end)
+    -- the game may have kept newBullet in a local before we got here; hook the function itself too
+    if hookfunction then
+        local ok2, old = pcall(hookfunction, orig, function(...)
+            if Cfg.Silent then
+                local args = {...}
+                local data
+                for i = 1, select("#", ...) do if type(args[i]) == "table" then data = args[i] break end end
+                pcall(rewriteShot, data)
+            end
+            return old(...)
+        end)
+        if ok2 then silent.undo = function() pcall(hookfunction, orig, old) end end
+    end
+    silent.hooked = ok
+    log("silent: newBullet hooked (field=" .. tostring(ok) .. " hookfunction=" .. tostring(silent.undo ~= nil) .. ")")
+    return true
+end
+cleanups[#cleanups + 1] = function()
+    if silent.mod and silent.orig then pcall(function() silent.mod.newBullet = silent.orig end) end
+    if silent.undo then silent.undo() end
+    silent.hooked = false
+end
+task.spawn(function()
+    local tries = 0
+    while logAlive and not silent.hooked and tries < 12 do
+        tries += 1
+        if not getgc then log("silent: executor has no getgc") return end
+        if hookBullets() then return end
+        log("silent: bullet module not found yet (try " .. tries .. ")")
+        task.wait(5)
+    end
+end)
+
 -- ---------------------------------------------------------------- UI
 local C = {
     bg = Color3.fromRGB(8, 16, 16), panel = Color3.fromRGB(10, 22, 22), dark = Color3.fromRGB(6, 14, 14),
@@ -989,6 +1098,9 @@ addToggle(tCmb, "Triggerbot: wall check", "TriggerWallCheck")
 addToggle(tCmb, "Triggerbot: head only", "TriggerHeadOnly")
 addSlider(tCmb, "Fire delay", "TriggerDelay", 0, 0.5, function(v) return string.format("%.2fs", v) end)
 addSlider(tCmb, "Max range", "TriggerRange", 50, 2000, function(v) return string.format("%dm", math.floor(v)) end)
+addToggle(tCmb, "Silent aim (redirects bullets, no actor APIs)", "Silent")
+addSlider(tCmb, "Silent aim radius (screen px)", "SilentFov", 20, 800, function(v) return string.format("%dpx", math.floor(v)) end)
+addToggle(tCmb, "Silent aim needs line of sight", "SilentWall")
 addToggle(tCmb, "Mouse lock-on (hold fire or aim)", "Aim")
 addSlider(tCmb, "Lock-on radius (screen px)", "AimFov", 20, 600, function(v) return string.format("%dpx", math.floor(v)) end)
 addSlider(tCmb, "Lock-on range (studs)", "AimRange", 20, 800, function(v) return string.format("%d studs", math.floor(v)) end)
