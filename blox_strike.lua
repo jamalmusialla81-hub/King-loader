@@ -874,6 +874,7 @@ local Features = {
     TriggerbotKey     = Enum.KeyCode.C,
     TriggerbotDelay   = 0.08,
     TriggerbotRange   = 300,
+    TriggerHeadOnly   = false,
     LastShotAt        = 0,
 
     RedWhenSighted    = true,
@@ -1678,11 +1679,22 @@ local function TryTriggerOnce()
     local targetChar = targetPlr.Character
     if not targetChar then return end
     if not result.Instance:IsDescendantOf(targetChar) then return end
+    local hitPart = result.Instance
+    if hitPart.Name == "Head" and Features.BigHeads then
+        -- Big Heads only enlarges the head on your screen; the real hitbox keeps its original size,
+        -- so only count the shot if the crosshair is inside the ORIGINAL head
+        local orig = originalHeadSizes[targetPlr.UserId]
+        if orig then
+            local lp = hitPart.CFrame:PointToObjectSpace(result.Position)
+            if math.abs(lp.X) > orig.X / 2 or math.abs(lp.Y) > orig.Y / 2 or math.abs(lp.Z) > orig.Z / 2 then return end
+        end
+    end
+    if Features.TriggerHeadOnly and hitPart.Name ~= "Head" then return end
     Features.LastShotAt = now
     pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+        VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, true, game, 1)
         task.wait(0.01)
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+        VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, false, game, 1)
     end)
 end
 
@@ -2470,6 +2482,7 @@ toggle(VIS_TAB, "Team Check", true, function(v) Features.TeamCheck = v end)
 -- =============================================================================
 toggle(COMBAT_TAB, "Big Heads", true, function(v) setBigHeads(v) end)
 toggle(COMBAT_TAB, "Enable Triggerbot", true, function(v) setTriggerbot(v) end)
+toggle(COMBAT_TAB, "Triggerbot: head only", false, function(v) Features.TriggerHeadOnly = v end)
 setTriggerbot(true) -- always on at startup
 
 Features.TriggerbotDelay = 0
