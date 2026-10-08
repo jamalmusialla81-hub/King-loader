@@ -512,7 +512,7 @@ connect(RunService.Heartbeat, function()
         local hit, aimPos = onCrosshair(e)
         if hit then
             -- glass is always see-through; wallbang materials only count while the fire button is held
-            local mats = (Cfg.TriggerWallbang and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) and WALLBANG_MATS
+            local mats = (Cfg.TriggerWallbang and not holding and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) and WALLBANG_MATS
                 or (Cfg.TriggerGlass and GLASS_MATS) or nil
             if not Cfg.TriggerWallCheck or worldClear(aimPos, mats) then target = e break end
         end
