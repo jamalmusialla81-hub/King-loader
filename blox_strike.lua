@@ -952,10 +952,8 @@ local function IsAlive(plr)
     if not plr then return false end
     local char = plr.Character
     if not char then return false end
-    -- the game parks far / out-of-view players in _PVS_CulledCharacters and stops updating them: their parts keep the
-    -- last position, so anything drawn for them would be in the wrong place. Treat them as not visible until the game brings them back.
+    -- characters the game parks in _PVS_CulledCharacters are still alive and still move (dead ones are caught by the Dead attribute below)
     if not char.Parent then return false end
-    if char.Parent.Name == "_PVS_CulledCharacters" then return false end
     local okD, dead = pcall(function() return plr:GetAttribute("Dead") end)
     if okD and dead == true then return false end
     local h = char:FindFirstChildOfClass("Humanoid")
@@ -4748,7 +4746,19 @@ shared.MH_Try('Debug log', function()
     local on = true
     local prev = {}
     local fpsAcc, fpsN = 0, 0
-    KING_KC(RunService.RenderStepped, function(dt) fpsAcc += dt; fpsN += 1 end)
+    local updCount, updLast = {}, {}      -- how many times per second a player's position actually changes
+    KING_KC(RunService.RenderStepped, function(dt)
+        fpsAcc += dt; fpsN += 1
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local ch = plr ~= LocalPlayer and plr.Character
+            local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local pos = hrp.Position
+                if updLast[plr] and (pos - updLast[plr]).Magnitude > 0.01 then updCount[plr] = (updCount[plr] or 0) + 1 end
+                updLast[plr] = pos
+            end
+        end
+    end)
     local function log(m) shared.MH_Log(m) end
     local function snapshot()
         local cam = workspace.CurrentCamera
@@ -4776,8 +4786,10 @@ shared.MH_Try('Debug log', function()
                     prev[plr] = hrp.Position
                 end
                 if isAlive then
-                    rows[#rows + 1] = string.format("  %s team=%s %s dist=%s onScreen=%s box=%s movedSince2s=%s parent=%s",
-                        plr.Name, tostring(GetTeam(plr)), mate and "TEAMMATE" or "ENEMY", dist, onScreen, tostring(boxShown), moved,
+                    local upd = (updCount[plr] or 0) / 2
+                    updCount[plr] = 0
+                    rows[#rows + 1] = string.format("  %s team=%s %s dist=%s onScreen=%s box=%s movedSince2s=%s posUpdates/s=%.0f parent=%s",
+                        plr.Name, tostring(GetTeam(plr)), mate and "TEAMMATE" or "ENEMY", dist, onScreen, tostring(boxShown), moved, upd,
                         ch and ch.Parent and ch.Parent.Name or "nil")
                 end
             end
