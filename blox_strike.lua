@@ -4666,6 +4666,79 @@ shared.MH_Try('Box ESP + gun chams', function()
     boxGui.Parent = GuiParent
     local boxes = {}
     shared.MH_Boxes = boxes
+    -- ---------- network positions ----------
+    -- The game hides players you can't see: their characters are parked in ReplicatedStorage._PVS_CulledCharacters and
+    -- stop moving. But its full movement snapshots (MovementV2Remotes.RemoteSnapshot, ~15 a second) still carry every
+    -- player's real root position, keyed by UserId. Layout in front of each position: <UserId varint><sequence varint><1 byte>.
+    -- Listen-only: this just reads packets the game already receives.
+    local net = {}                      -- userId -> {pos = Vector3, t = os.clock(), vel = Vector3}
+    shared.MH_Net = net
+    local idSet, idSetAt = {}, 0
+    local function refreshIds()
+        if os.clock() - idSetAt < 1 then return end
+        idSetAt = os.clock()
+        idSet = {}
+        for _, pl in ipairs(Players:GetPlayers()) do idSet[pl.UserId] = true end
+    end
+    local function plausible(v) return v == v and (v == 0 or (v > -5000 and v < 5000 and (v > 0.01 or v < -0.01))) end
+    local function idBefore(b, off)
+        local i = off - 2                                   -- last byte of the sequence varint
+        if i < 1 or buffer.readu8(b, i) >= 128 then return nil end
+        local st = i
+        while st > 0 and buffer.readu8(b, st - 1) >= 128 and i - st < 3 do st -= 1 end
+        local e = st - 1                                    -- last byte of the UserId varint
+        if e < 2 or buffer.readu8(b, e) >= 128 then return nil end
+        for n = 3, 6 do
+            local first = e - n + 1
+            if first < 0 then break end
+            local okC = true
+            for k = first, e - 1 do if buffer.readu8(b, k) < 128 then okC = false break end end
+            if okC then
+                local v, mul = 0, 1
+                for k = first, e do v += (buffer.readu8(b, k) % 128) * mul; mul *= 128 end
+                if idSet[v] then return v end
+            end
+        end
+        return nil
+    end
+    task.spawn(function()
+        local folder = RS:WaitForChild("MovementV2Remotes", 15)
+        local rem = folder and folder:WaitForChild("RemoteSnapshot", 15)
+        if not rem then shared.MH_Log("net ESP: RemoteSnapshot not found") return end
+        shared.MH_Log("net ESP: listening to RemoteSnapshot")
+        local logged = 0
+        KING_KC(rem.OnClientEvent, function(b)
+            if typeof(b) ~= "buffer" then return end
+            local len = buffer.len(b)
+            if len < 60 then return end                     -- only full snapshots carry positions
+            refreshIds()
+            local now = os.clock()
+            local off, found = 4, 0
+            while off <= len - 12 do
+                local x, y, z = buffer.readf32(b, off), buffer.readf32(b, off + 4), buffer.readf32(b, off + 8)
+                local uid = nil
+                if plausible(x) and plausible(y) and plausible(z) and y > -500 and y < 1500 then uid = idBefore(b, off) end
+                if uid then
+                    local pos = Vector3.new(x, y, z)
+                    local prev = net[uid]
+                    local vel = Vector3.zero
+                    if prev then
+                        local dt = now - prev.t
+                        if dt > 0.02 and dt < 0.5 then vel = (pos - prev.pos) / dt end
+                    end
+                    net[uid] = {pos = pos, t = now, vel = vel}
+                    found += 1
+                    off += 12
+                else
+                    off += 1
+                end
+            end
+            if logged < 3 then
+                logged += 1
+                shared.MH_Log(string.format("net ESP: snapshot %d bytes -> %d player positions decoded", len, found))
+            end
+        end)
+    end)
     local function makeBox(plr)
         local f = Instance.new("Frame", boxGui)
         f.BackgroundTransparency = 1
@@ -4709,9 +4782,19 @@ shared.MH_Try('Box ESP + gun chams', function()
                     local stale = ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters"   -- frozen at the last position the game sent
                     local head = ch and ch:FindFirstChild("Head")
                     local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+                    -- hidden (culled) players: move the frozen body to the real position from the network snapshots
+                    local shift = Vector3.zero
+                    if stale and hrp then
+                        local np = net[plr.UserId]
+                        if np and os.clock() - np.t < 1.5 then
+                            local ahead = math.min(os.clock() - np.t, 0.15)
+                            shift = (np.pos + np.vel * ahead) - hrp.Position
+                            stale = false
+                        end
+                    end
                     if head and hrp then
-                        local hp, onH = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.6, 0))
-                        local fp, onF = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.6, 0))
+                        local hp, onH = cam:WorldToViewportPoint(head.Position + shift + Vector3.new(0, 0.6, 0))
+                        local fp, onF = cam:WorldToViewportPoint(hrp.Position + shift - Vector3.new(0, 2.6, 0))
                         if onH and onF and hp.Z > 0 and fp.Z > 0 then
                             local h = math.abs(fp.Y - hp.Y)
                             if h >= 6 then
@@ -4844,6 +4927,8 @@ shared.MH_Try('Debug log', function()
                     prev[plr] = hrp.Position
                 end
                 if isAlive then
+                    local np = shared.MH_Net and shared.MH_Net[plr.UserId]
+                    moved = moved .. (np and string.format(" netAge=%.1fs", os.clock() - np.t) or " netAge=none")
                     local upd = (updCount[plr] or 0) / 2
                     updCount[plr] = 0
                     rows[#rows + 1] = string.format("  %s team=%s %s dist=%s onScreen=%s box=%s movedSince2s=%s posUpdates/s=%.0f parent=%s",
