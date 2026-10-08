@@ -49,6 +49,80 @@ task.spawn(function()
 end)
 log("started; placeId=" .. tostring(game.PlaceId))
 
+-- ---------------------------------------------------------------- kill other scripts
+-- Other hubs / ESPs you ran before this one: their drawings are cleared, their menus destroyed and their event
+-- hooks (render loops, input, player events) disconnected. Only functions created by the executor are touched,
+-- never the game's own. Runs before this script hooks anything, so it can't hit itself.
+do
+    local isExec = isexecutorclosure or checkclosure or isourclosure or is_synapse_function
+    local killedConns, killedGuis = 0, 0
+    pcall(function() if cleardrawcache then cleardrawcache() end end)
+    local function foreign(fn) local ok, r = pcall(isExec, fn) return ok and r end
+    if getconnections and isExec then
+        local Lighting = game:GetService("Lighting")
+        local signals = {
+            RunService.RenderStepped, RunService.Heartbeat, RunService.Stepped,
+            UserInputService.InputBegan, UserInputService.InputChanged, UserInputService.InputEnded,
+            Players.PlayerAdded, Players.PlayerRemoving, Workspace.ChildAdded, Workspace.ChildRemoved,
+            Workspace.DescendantAdded, Workspace.DescendantRemoving, Lighting.Changed,
+        }
+        pcall(function() signals[#signals + 1] = Workspace:GetPropertyChangedSignal("CurrentCamera") end)
+        pcall(function() signals[#signals + 1] = LocalPlayer.CharacterAdded end)
+        pcall(function() signals[#signals + 1] = Workspace.CurrentCamera:GetPropertyChangedSignal("CFrame") end)
+        for _, sig in ipairs(signals) do
+            local ok, conns = pcall(getconnections, sig)
+            if ok and conns then
+                for _, c in ipairs(conns) do
+                    local fn = c.Function
+                    if fn and foreign(fn) then
+                        if pcall(function() c:Disconnect() end) or pcall(function() c:Disable() end) then killedConns += 1 end
+                    end
+                end
+            end
+        end
+    end
+    -- menus: any GUI (hidden GUI folder, CoreGui, PlayerGui) whose buttons run executor code
+    local function executorGui(g)
+        if not (getconnections and isExec) then return false end
+        local checked = 0
+        for _, d in ipairs(g:GetDescendants()) do
+            if d:IsA("GuiButton") then
+                for _, sig in ipairs({d.MouseButton1Click, d.MouseButton1Down, d.Activated}) do
+                    local ok, conns = pcall(getconnections, sig)
+                    if ok and conns then
+                        for _, c in ipairs(conns) do if c.Function and foreign(c.Function) then return true end end
+                    end
+                end
+                checked += 1
+                if checked > 60 then return false end
+            end
+        end
+        return false
+    end
+    local hui
+    pcall(function() if gethui then hui = gethui() end end)
+    if hui and hui ~= CoreGui then
+        for _, g in ipairs(hui:GetChildren()) do
+            -- only menus (clickable executor code): Lua-made Drawing libraries keep their canvas here too
+            if executorGui(g) and pcall(function() g:Destroy() end) then killedGuis += 1 end
+        end
+    end
+    for _, g in ipairs(CoreGui:GetChildren()) do
+        if g ~= hui and g:IsA("ScreenGui") and executorGui(g) then
+            if pcall(function() g:Destroy() end) then killedGuis += 1 end
+        end
+    end
+    pcall(function()
+        for _, g in ipairs(LocalPlayer.PlayerGui:GetChildren()) do
+            if g:IsA("ScreenGui") and executorGui(g) then
+                if pcall(function() g:Destroy() end) then killedGuis += 1 end
+            end
+        end
+    end)
+    log(string.format("killed other scripts: %d hooks disconnected, %d menus removed (getconnections=%s, closure check=%s, cleardrawcache=%s)",
+        killedConns, killedGuis, tostring(getconnections ~= nil), tostring(isExec ~= nil), tostring(cleardrawcache ~= nil)))
+end
+
 local GuiParent = CoreGui
 pcall(function() if gethui then GuiParent = gethui() end end)
 
