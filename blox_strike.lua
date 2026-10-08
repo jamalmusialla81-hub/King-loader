@@ -36,6 +36,9 @@ do
         return c
     end
     -- runs every frame AFTER the camera has moved (RenderStepped can run before it, which makes overlays trail one frame behind)
+    g.KING_ONUNLOAD = function(fn)          -- run fn when this script is unloaded / replaced
+        conns[#conns + 1] = {Disconnect = fn}
+    end
     g.KING_RENDER = function(fn)
         local name = "KING_" .. game:GetService("HttpService"):GenerateGUID(false)
         game:GetService("RunService"):BindToRenderStep(name, Enum.RenderPriority.Last.Value, fn)
@@ -1074,7 +1077,7 @@ local function restoreHead(plr)
     if char then
         local head = char:FindFirstChild("Head")
         if head then
-            local orig = originalHeadSizes[plr.UserId]
+            local orig = head:GetAttribute("KingOrigSize") or originalHeadSizes[plr.UserId]
             if orig then head.Size = orig end
         end
     end
@@ -1105,9 +1108,14 @@ local function applyBigHead(plr, char)
     if not head then return end
     if not Features.BigHeads then return end
     if IsTeammate(plr) then return end
-    if not originalHeadSizes[plr.UserId] then
-        originalHeadSizes[plr.UserId] = head.Size
+    -- remember the REAL size on the part itself, so a reload can't mistake the enlarged size for the original
+    local real = head:GetAttribute("KingOrigSize")
+    if not real then
+        real = head.Size
+        if real.X >= 2.9 then real = Vector3.new(1.2, 1.2, 1.2) end   -- already enlarged by an older load: best guess for the native size
+        pcall(function() head:SetAttribute("KingOrigSize", real) end)
     end
+    originalHeadSizes[plr.UserId] = real
     head.Size = Vector3.new(3, 3, 3)
 end
 
@@ -1128,6 +1136,10 @@ local function disableBigHeads(plr)
     if conn then conn:Disconnect(); bigHeadsConnections[plr.UserId] = nil end
     restoreHead(plr)
 end
+
+KING_ONUNLOAD(function()
+    for _, plr in ipairs(Players:GetPlayers()) do pcall(restoreHead, plr) end
+end)
 
 local function setBigHeads(on)
     Features.BigHeads = on
@@ -1690,7 +1702,7 @@ local function TryTriggerOnce()
     if hitPart.Name == "Head" and Features.BigHeads then
         -- Big Heads only enlarges the head on your screen; the real hitbox keeps its original size,
         -- so only count the shot if the crosshair is inside the ORIGINAL head
-        local orig = originalHeadSizes[targetPlr.UserId]
+        local orig = hitPart:GetAttribute("KingOrigSize") or originalHeadSizes[targetPlr.UserId]
         if orig then
             local lp = hitPart.CFrame:PointToObjectSpace(result.Position)
             if math.abs(lp.X) > orig.X / 2 or math.abs(lp.Y) > orig.Y / 2 or math.abs(lp.Z) > orig.Z / 2 then
@@ -2498,7 +2510,7 @@ toggle(VIS_TAB, "Team Check", true, function(v) Features.TeamCheck = v end)
 -- =============================================================================
 --  COMBAT TAB
 -- =============================================================================
-toggle(COMBAT_TAB, "Big Heads", true, function(v) setBigHeads(v) end)
+toggle(COMBAT_TAB, "Big Heads (visual only - does not change real hits)", false, function(v) setBigHeads(v) end)
 toggle(COMBAT_TAB, "Enable Triggerbot", true, function(v) setTriggerbot(v) end)
 toggle(COMBAT_TAB, "Triggerbot: head only", false, function(v) Features.TriggerHeadOnly = v end)
 setTriggerbot(true) -- always on at startup
@@ -2561,7 +2573,6 @@ for idx, fn in ipairs({
     function() setSkeletonESP(true) end,
     function() setHealthBars(true) end,
     function() setFullBright(true) end,
-    function() setBigHeads(true) end,
     function() setNoFlash(true) end,
     function() setSeeThroughSmoke(true) end,
     function() setSeeThroughFire(true) end,
@@ -4776,10 +4787,12 @@ shared.MH_Try('Debug log', function()
             tostring(Features.NameTags), tostring(Features.Triggerbot), tostring(Features.TriggerHeadOnly), tostring(Features.BigHeads), tostring(Features.TeamCheck)))
         for _, r in ipairs(rows) do log(r) end
     end
+    local running = true
+    KING_ONUNLOAD(function() running = false end)
     task.spawn(function()
-        while true do
+        while running do
             task.wait(2)
-            if on then pcall(snapshot) end
+            if on and running then pcall(snapshot) end
         end
     end)
     toggle(TAB, "Debug log (every 2s)", true, function(v) on = v end)
