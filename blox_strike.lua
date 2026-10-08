@@ -949,8 +949,10 @@ local function IsAlive(plr)
     if not plr then return false end
     local char = plr.Character
     if not char then return false end
-    -- characters can sit outside workspace (not streamed in / stored elsewhere); only a destroyed one has no parent at all
-    if not char.Parent and not char:FindFirstChild("Head") then return false end
+    -- the game parks far / out-of-view players in _PVS_CulledCharacters and stops updating them: their parts keep the
+    -- last position, so anything drawn for them would be in the wrong place. Treat them as not visible until the game brings them back.
+    if not char.Parent then return false end
+    if char.Parent.Name == "_PVS_CulledCharacters" then return false end
     local okD, dead = pcall(function() return plr:GetAttribute("Dead") end)
     if okD and dead == true then return false end
     local h = char:FindFirstChildOfClass("Humanoid")
@@ -1691,7 +1693,17 @@ local function TryTriggerOnce()
         local orig = originalHeadSizes[targetPlr.UserId]
         if orig then
             local lp = hitPart.CFrame:PointToObjectSpace(result.Position)
-            if math.abs(lp.X) > orig.X / 2 or math.abs(lp.Y) > orig.Y / 2 or math.abs(lp.Z) > orig.Z / 2 then return end
+            if math.abs(lp.X) > orig.X / 2 or math.abs(lp.Y) > orig.Y / 2 or math.abs(lp.Z) > orig.Z / 2 then
+                if shared.MH_Log and now - (Features.LastBigHeadLog or 0) > 1 then
+                    Features.LastBigHeadLog = now
+                    shared.MH_Log(string.format("TRIGGER skipped %s: crosshair on the enlarged head but outside the real head (local %.2f,%.2f,%.2f real half-size %.2f,%.2f,%.2f)",
+                        targetPlr.Name, lp.X, lp.Y, lp.Z, orig.X / 2, orig.Y / 2, orig.Z / 2))
+                end
+                return
+            end
+        elseif shared.MH_Log and now - (Features.LastBigHeadLog or 0) > 1 then
+            Features.LastBigHeadLog = now
+            shared.MH_Log("TRIGGER head hit on " .. targetPlr.Name .. " but no original head size recorded (Big Heads did not store one)")
         end
     end
     if Features.TriggerHeadOnly and hitPart.Name ~= "Head" then return end
