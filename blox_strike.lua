@@ -30,8 +30,23 @@ do
     pcall(function() if gethui then gp = gethui() end end)
     local baseline = {}
     for _, v in ipairs(gp:GetChildren()) do baseline[v] = true end
+    local prof = {}
+    shared.MH_Prof = prof      -- label -> {total seconds, max seconds, calls}, read and reset by the Debug tab
+    local function timed(fn)
+        local okL, line = pcall(debug.info, fn, "l")
+        local label = "line" .. tostring(okL and line or "?")
+        return function(...)
+            local t = os.clock()
+            fn(...)
+            local d = os.clock() - t
+            local e = prof[label]
+            if not e then e = {0, 0, 0}; prof[label] = e end
+            e[1] += d; e[3] += 1
+            if d > e[2] then e[2] = d end
+        end
+    end
     g.KING_KC = function(sig, fn)
-        local c = sig:Connect(fn)
+        local c = sig:Connect(timed(fn))
         conns[#conns + 1] = c
         return c
     end
@@ -41,7 +56,7 @@ do
     end
     g.KING_RENDER = function(fn)
         local name = "KING_" .. game:GetService("HttpService"):GenerateGUID(false)
-        game:GetService("RunService"):BindToRenderStep(name, Enum.RenderPriority.Last.Value, fn)
+        game:GetService("RunService"):BindToRenderStep(name, Enum.RenderPriority.Last.Value, timed(fn))
         local h = {Disconnect = function() pcall(function() game:GetService("RunService"):UnbindFromRenderStep(name) end) end}
         conns[#conns + 1] = h
         return h
@@ -4747,8 +4762,11 @@ shared.MH_Try('Debug log', function()
     local prev = {}
     local fpsAcc, fpsN = 0, 0
     local updCount, updLast = {}, {}      -- how many times per second a player's position actually changes
+    local frameMax, hitches = 0, 0
     KING_KC(RunService.RenderStepped, function(dt)
         fpsAcc += dt; fpsN += 1
+        if dt > frameMax then frameMax = dt end
+        if dt > 0.025 then hitches += 1 end
         for _, plr in ipairs(Players:GetPlayers()) do
             local ch = plr ~= LocalPlayer and plr.Character
             local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
@@ -4793,6 +4811,19 @@ shared.MH_Try('Debug log', function()
                         ch and ch.Parent and ch.Parent.Name or "nil")
                 end
             end
+        end
+        do
+            local top = {}
+            for label, e in pairs(shared.MH_Prof or {}) do top[#top + 1] = {label, e[1], e[2], e[3]} end
+            table.sort(top, function(a, b) return a[2] > b[2] end)
+            local parts = {}
+            for i = 1, math.min(5, #top) do
+                parts[#parts + 1] = string.format("%s=%.2fms/s(max %.1fms, %d calls)", top[i][1], top[i][2] / 2 * 1000, top[i][3] * 1000, top[i][4])
+            end
+            shared.MH_Prof = shared.MH_Prof or {}
+            for k in pairs(shared.MH_Prof) do shared.MH_Prof[k] = nil end
+            log(string.format("PERF slowestFrame=%.1fms framesOver25ms=%d | script cost per second, top5: %s", frameMax * 1000, hitches, table.concat(parts, "  ")))
+            frameMax, hitches = 0, 0
         end
         log(string.format("SNAP fps=%.0f alive=%d enemies=%d teammates=%d boxesDrawn=%d | me team=%s | Box=%s Skel=%s Names=%s Trig=%s headOnly=%s BigHeads=%s TeamCheck=%s",
             fps, alive, enemies, mates, drawn, tostring(GetTeam(LocalPlayer)), tostring(shared.MH_BoxOn ~= false), tostring(Features.SkeletonESP),
