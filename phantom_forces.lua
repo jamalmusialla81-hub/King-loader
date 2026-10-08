@@ -54,7 +54,7 @@ pcall(function() if gethui then GuiParent = gethui() end end)
 
 local Cfg = {
     Box = true, Names = true, Distance = true, HeadDot = true, MaxDist = 1000,
-    Trigger = true, TriggerDelay = 0.0, TriggerRange = 1000, TriggerWallCheck = true, TriggerHeadOnly = false,
+    Trigger = true, TriggerGlass = true, TriggerWallbang = false, TriggerDelay = 0.0, TriggerRange = 1000, TriggerWallCheck = true, TriggerHeadOnly = false,
     Aim = true, AimFov = 180, AimRange = 250, AimSmooth = 0.35, AimVisible = true, AimHuman = 70,
     AimPart = 1, AimSticky = true, AimMaxStep = 40,
     -- esp extras
@@ -172,17 +172,34 @@ local function projectBox(cf, size)
     if any and maxX - minX >= 3 and maxY - minY >= 3 then return minX, minY, maxX, maxY end
 end
 
--- nothing solid between the camera and a point (player models are ignored)
-local function worldClear(targetPos)
+-- nothing solid between the camera and a point (player models are ignored).
+-- passMats: set of Enum.Material that count as "see-through" for this check (glass, or thin wallbang materials).
+local function worldClear(targetPos, passMats)
     local ignore = {camera}
     local pf = playersFolder()
     if pf then ignore[#ignore + 1] = pf end
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
-    rp.FilterDescendantsInstances = ignore
     rp.IgnoreWater = true
-    return workspace:Raycast(camera.CFrame.Position, targetPos - camera.CFrame.Position, rp) == nil
+    local origin = camera.CFrame.Position
+    for _ = 1, 10 do
+        rp.FilterDescendantsInstances = ignore
+        local hit = workspace:Raycast(origin, targetPos - origin, rp)
+        if not hit then return true end
+        local part = hit.Instance
+        if passMats and (passMats[part.Material] or (passMats[Enum.Material.Glass] and part.Transparency >= 0.5)) then
+            ignore[#ignore + 1] = part       -- pass through this part and keep looking
+        else
+            return false
+        end
+    end
+    return false
 end
+local GLASS_MATS = {[Enum.Material.Glass] = true}
+local WALLBANG_MATS = {
+    [Enum.Material.Glass] = true, [Enum.Material.Wood] = true, [Enum.Material.WoodPlanks] = true,
+    [Enum.Material.Plastic] = true, [Enum.Material.SmoothPlastic] = true, [Enum.Material.Fabric] = true, [Enum.Material.Ice] = true,
+}
 
 -- ---------------------------------------------------------------- box ESP
 local espGui = Instance.new("ScreenGui")
@@ -493,7 +510,12 @@ connect(RunService.Heartbeat, function()
     local target
     for _, e in ipairs(cachedEnemies) do
         local hit, aimPos = onCrosshair(e)
-        if hit and (not Cfg.TriggerWallCheck or worldClear(aimPos)) then target = e break end
+        if hit then
+            -- glass is always see-through; wallbang materials only count while the fire button is held
+            local mats = (Cfg.TriggerWallbang and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) and WALLBANG_MATS
+                or (Cfg.TriggerGlass and GLASS_MATS) or nil
+            if not Cfg.TriggerWallCheck or worldClear(aimPos, mats) then target = e break end
+        end
     end
     if os.clock() - lastTrigLog > 3 then
         lastTrigLog = os.clock()
@@ -986,6 +1008,8 @@ addCycle(tWorld, "Ambient color", "AmbientColor", PALETTE)
 local tCmb = addTab("Combat")
 addToggle(tCmb, "Triggerbot", "Trigger")
 addToggle(tCmb, "Triggerbot: wall check", "TriggerWallCheck")
+addToggle(tCmb, "Triggerbot: shoot through glass", "TriggerGlass")
+addToggle(tCmb, "Triggerbot: wallbang thin walls (only while you hold click)", "TriggerWallbang")
 addToggle(tCmb, "Triggerbot: head only", "TriggerHeadOnly")
 addSlider(tCmb, "Fire delay", "TriggerDelay", 0, 0.5, function(v) return string.format("%.2fs", v) end)
 addSlider(tCmb, "Max range", "TriggerRange", 50, 2000, function(v) return string.format("%dm", math.floor(v)) end)
