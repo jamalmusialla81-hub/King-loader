@@ -57,6 +57,7 @@ local Cfg = {
     Trigger = true, TriggerGlass = true, TriggerWallbang = false, TriggerDelay = 0.0, TriggerRange = 1000, TriggerWallCheck = true, TriggerHeadOnly = false,
     Aim = true, AimFov = 180, AimRange = 250, AimSmooth = 0.35, AimVisible = true, AimHuman = 70,
     AimPart = 1, AimSticky = true, AimMaxStep = 40,
+    HeadOnly = true, DropComp = true, LeadComp = true, BulletSpeed = 2500,
     -- esp extras
     BoxMode = 1, BoxColor = 1, NameColor = 3, DistColor = 3, EspVisOnly = false, VisTint = true,
     Chams = false, ChamsColor = 1, ChamsFill = 0.6,
@@ -483,14 +484,89 @@ local function release()
 end
 cleanups[#cleanups + 1] = release
 
+-- ---------------------------------------------------------------- bullet drop + lead
+-- Bullets fly at the gun's muzzle velocity and fall with gravity, so at range the crosshair has to sit above and
+-- ahead of the head. Muzzle velocity comes from the game's weapon data (matched by the gun you're holding); the
+-- "Bullet speed" slider is the fallback. Enemy velocity is measured from how their head moves.
+local gunSpeeds, gunSpeedsAt, heldSpeed = {}, 0, nil
+local function scanGunSpeeds()
+    if not getgc or os.clock() - gunSpeedsAt < 15 then return end
+    gunSpeedsAt = os.clock()
+    local n = 0
+    pcall(function()
+        for _, t in ipairs(getgc(true)) do
+            if type(t) == "table" then
+                local bs = rawget(t, "bulletspeed")
+                local nm = rawget(t, "name")
+                if type(bs) == "number" and bs > 100 and type(nm) == "string" then
+                    if not gunSpeeds[nm] then n += 1 end
+                    gunSpeeds[nm] = bs
+                end
+            end
+        end
+    end)
+    if n > 0 then log(string.format("drop: found muzzle velocity for %d guns", n)) end
+end
+local function bulletSpeed()
+    -- the gun you're holding is a model under the camera named after the weapon
+    local cam = workspace.CurrentCamera
+    if cam then
+        for _, m in ipairs(cam:GetChildren()) do
+            local v = m:IsA("Model") and gunSpeeds[m.Name]
+            if v then
+                if heldSpeed ~= v then heldSpeed = v; log(string.format("drop: holding %s, %d studs/s", m.Name, v)) end
+                return v
+            end
+        end
+    end
+    return Cfg.BulletSpeed
+end
+task.spawn(function() while logAlive ~= false and task.wait(2) do scanGunSpeeds() end end)
+
+local motion = {}                -- enemy name -> {pos, t, vel}
+connect(RunService.Heartbeat, function()
+    local now = os.clock()
+    for _, e in ipairs(cachedEnemies) do
+        local pos = e.head.Position
+        local m = motion[e.name]
+        if m then
+            local dt = now - m.t
+            if dt > 0.01 then
+                local v = (pos - m.pos) / dt
+                if v.Magnitude > 120 then v = Vector3.zero end      -- respawn / teleport
+                m.vel = m.vel:Lerp(v, 0.35); m.pos = pos; m.t = now
+            end
+        else
+            motion[e.name] = {pos = pos, t = now, vel = Vector3.zero}
+        end
+    end
+end)
+
+-- where to put the crosshair so the bullet lands on `target`
+local function predict(e, target)
+    if not (Cfg.DropComp or Cfg.LeadComp) then return target end
+    local origin = camera.CFrame.Position
+    local speed = bulletSpeed()
+    local g = workspace.Gravity
+    local m = motion[e.name]
+    local vel = (Cfg.LeadComp and m) and m.vel or Vector3.zero
+    local pt, t = target, 0
+    for _ = 1, 3 do
+        t = (pt - origin).Magnitude / speed
+        pt = target + vel * t
+    end
+    if Cfg.DropComp then pt += Vector3.new(0, 0.5 * g * t * t, 0) end
+    return pt
+end
+
 local function onCrosshair(e)
     local c = camera.ViewportSize / 2
-    local hp, on = camera:WorldToViewportPoint(e.head.Position)
+    local hp, on = camera:WorldToViewportPoint(predict(e, e.head.Position))
     if on and hp.Z > 0 and hp.Z <= Cfg.TriggerRange then
         local r = math.max(6, (e.head.Size.Magnitude * 0.6) / hp.Z * camera.ViewportSize.Y / (2 * math.tan(math.rad(camera.FieldOfView / 2))))
         if (Vector2.new(hp.X, hp.Y) - c).Magnitude <= r then return true, e.head.Position end
     end
-    if not Cfg.TriggerHeadOnly then
+    if not (Cfg.TriggerHeadOnly or Cfg.HeadOnly) then
         local ok, cf, size = pcall(function() return e.model:GetBoundingBox() end)
         if ok and cf and (cf.Position - camera.CFrame.Position).Magnitude <= Cfg.TriggerRange then
             local x0, y0, x1, y1 = projectBox(cf, size)
@@ -537,7 +613,8 @@ end)
 local AIM_PARTS = {{"Head", 0}, {"Chest", 1.3}}
 local lock = {name = nil, scale = 1, cmd = nil, last = nil, accX = 0, accY = 0}
 local function aimPointOf(e)
-    return e.head.Position - Vector3.new(0, AIM_PARTS[Cfg.AimPart][2], 0)
+    local part = Cfg.HeadOnly and 1 or Cfg.AimPart
+    return predict(e, e.head.Position - Vector3.new(0, AIM_PARTS[part][2], 0))
 end
 local function aimCandidate(e, c, fovMul)
     local pt = aimPointOf(e)
@@ -546,7 +623,7 @@ local function aimCandidate(e, c, fovMul)
     if not (on and sp.Z > 0) then return end
     local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
     if d > Cfg.AimFov * fovMul then return end
-    if Cfg.AimVisible and not worldClear(pt) then return end
+    if Cfg.AimVisible and not worldClear(e.head.Position) then return end
     return d, Vector2.new(sp.X, sp.Y)
 end
 connect(RunService.RenderStepped, function()
@@ -1010,6 +1087,10 @@ addToggle(tCmb, "Triggerbot", "Trigger")
 addToggle(tCmb, "Triggerbot: wall check", "TriggerWallCheck")
 addToggle(tCmb, "Triggerbot: shoot through glass", "TriggerGlass")
 addToggle(tCmb, "Triggerbot: wallbang thin walls (only while you hold click)", "TriggerWallbang")
+addToggle(tCmb, "Headshots only (triggerbot + lock-on)", "HeadOnly")
+addToggle(tCmb, "Bullet drop compensation", "DropComp")
+addToggle(tCmb, "Lead moving targets", "LeadComp")
+addSlider(tCmb, "Bullet speed if gun unknown", "BulletSpeed", 500, 4000, function(v) return string.format("%d studs/s", math.floor(v)) end)
 addToggle(tCmb, "Triggerbot: head only", "TriggerHeadOnly")
 addSlider(tCmb, "Fire delay", "TriggerDelay", 0, 0.5, function(v) return string.format("%.2fs", v) end)
 addSlider(tCmb, "Max range", "TriggerRange", 50, 2000, function(v) return string.format("%dm", math.floor(v)) end)
