@@ -35,6 +35,14 @@ do
         conns[#conns + 1] = c
         return c
     end
+    -- runs every frame AFTER the camera has moved (RenderStepped can run before it, which makes overlays trail one frame behind)
+    g.KING_RENDER = function(fn)
+        local name = "KING_" .. game:GetService("HttpService"):GenerateGUID(false)
+        game:GetService("RunService"):BindToRenderStep(name, Enum.RenderPriority.Last.Value, fn)
+        local h = {Disconnect = function() pcall(function() game:GetService("RunService"):UnbindFromRenderStep(name) end) end}
+        conns[#conns + 1] = h
+        return h
+    end
     local SWEEP = {BloxBangOutline = true, BloxBangNameTag = true, KingBombMarker = true, KingBombBeam = true, KingFullBright = true}
     g.KING_UNLOADERS.blox = function()
         for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
@@ -1300,7 +1308,7 @@ end)
 -- =============================================================================
 local skeletonHeartbeat
 local skeletonLastRun = 0
-local SKELETON_COOLDOWN = 0.03
+local SKELETON_COOLDOWN = 0
 local SKELETON_GUI_NAME = "BloxBangSkeleton"
 
 local BONES = {
@@ -1403,7 +1411,7 @@ local function setSkeletonESP(on)
     Features.SkeletonESP = on
     if on then
         if skeletonHeartbeat then return end
-        skeletonHeartbeat = KING_KC(RunService.RenderStepped, function()
+        skeletonHeartbeat = KING_RENDER(function()
             if not Features.SkeletonESP then return end
             local now = tick()
             if now - skeletonLastRun < SKELETON_COOLDOWN then return end
@@ -4599,7 +4607,7 @@ shared.MH_Try('Box ESP + gun chams', function()
         end
     end
 
-    KING_KC(RunService.RenderStepped, function()
+    KING_RENDER(function()
         local cam = workspace.CurrentCamera
         -- boxes
         local seen = {}
