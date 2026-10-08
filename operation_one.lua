@@ -904,18 +904,18 @@ local function applyNoRecoil()
         if not ok then log("no-recoil: run_on_actor failed: " .. tostring(err)) end
         return ok
     end
-    -- no actor support in this executor: try the main thread (may have no effect on the game's own copy)
-    local fn = loadstring(src)
-    if fn then
-        local ok, err = pcall(fn)
-        if not ok then log("no-recoil: main-thread patch failed: " .. tostring(err)) end
-        return ok
-    end
+    -- No actor support (e.g. Xeno): the game's gun code lives in an actor we can't reach. Requiring the game's
+    -- modules from here creates a broken second copy that spams "Cannot require a RobloxScript module" errors,
+    -- so no-recoil is simply not available on this executor.
     return false
 end
 log("no-recoil: actor support = " .. tostring(getactors ~= nil and run_on_actor ~= nil))
 task.spawn(function()
     local lastFlag
+    if not (getactors and run_on_actor) then
+        log("no-recoil: needs getactors/run_on_actor, which this executor does not have - disabled")
+        return
+    end
     while task.wait(3) and logAlive do
         if lastFlag ~= Cfg.NoRecoil or Cfg.NoRecoil then   -- re-run so guns created later get wrapped too
             lastFlag = Cfg.NoRecoil
