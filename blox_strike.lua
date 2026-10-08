@@ -73,10 +73,15 @@ do
         end)
     end
     pcall(function() writefile(LOG, "hub log (fresh each run)\n") end)
+    shared.MH_Ring = {}
     shared.MH_Log = function(msg)
         count += 1
+        local line = string.format("[+%7.1fs] %s", os.clock() - t0, tostring(msg))
+        local ring = shared.MH_Ring
+        ring[#ring + 1] = line
+        if #ring > 600 then table.remove(ring, 1) end      -- last 600 lines, for the copy button
         if count > 4000 then return end
-        buf[#buf + 1] = string.format("[+%7.1fs] %s", os.clock() - t0, tostring(msg))
+        buf[#buf + 1] = line
     end
     shared.MH_Try = function(name, fn)
         local ok, err = pcall(fn)
@@ -1691,6 +1696,7 @@ local function TryTriggerOnce()
     end
     if Features.TriggerHeadOnly and hitPart.Name ~= "Head" then return end
     Features.LastShotAt = now
+    if shared.MH_Log then shared.MH_Log(string.format("TRIGGER fire at %s part=%s dist=%.0f bigheads=%s headOnly=%s", targetPlr.Name, hitPart.Name, (result.Position - ray.Origin).Magnitude, tostring(Features.BigHeads), tostring(Features.TriggerHeadOnly))) end
     pcall(function()
         VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, true, game, 1)
         task.wait(0.01)
@@ -4589,6 +4595,7 @@ shared.MH_Try('Box ESP + gun chams', function()
     boxGui.IgnoreGuiInset = true
     boxGui.Parent = GuiParent
     local boxes = {}
+    shared.MH_Boxes = boxes
     local function makeBox(plr)
         local f = Instance.new("Frame", boxGui)
         f.BackgroundTransparency = 1
@@ -4673,7 +4680,7 @@ shared.MH_Try('Box ESP + gun chams', function()
         hl.OutlineTransparency = 0
     end)
 
-    toggle(VIS_TAB, "Box ESP", true, function(v) boxOn = v end)
+    toggle(VIS_TAB, "Box ESP", true, function(v) boxOn = v; shared.MH_BoxOn = v end)
     toggle(VIS_TAB, "Gun Chams", true, function(v) chamsOn = v; if not v then killChams() end end)
     local colorBtn
     colorBtn = button(VIS_TAB, "Chams colour: " .. CHAMS_COLORS[chamsIdx][1], function()
@@ -4708,6 +4715,69 @@ KING_KC(UserInputService.InputBegan, function(i, g)
 end)
 
 SelectTab(tabButtons["Visuals"], tabPages["Visuals"], "Visuals", "👁")
+
+-- =============================================================================
+--  DEBUG LOG: everything the ESP / triggerbot / players are doing, every 2 s, into king_hub/hub_log.txt
+--  Debug tab: "Copy log to clipboard" copies the last 600 lines so they can be pasted straight into chat.
+-- =============================================================================
+shared.MH_Try('Debug log', function()
+    local TAB = createTab("🛠", "Debug")
+    local on = true
+    local prev = {}
+    local fpsAcc, fpsN = 0, 0
+    KING_KC(RunService.RenderStepped, function(dt) fpsAcc += dt; fpsN += 1 end)
+    local function log(m) shared.MH_Log(m) end
+    local function snapshot()
+        local cam = workspace.CurrentCamera
+        local fps = fpsN > 0 and fpsN / fpsAcc or 0
+        fpsAcc, fpsN = 0, 0
+        local alive, enemies, mates, drawn = 0, 0, 0, 0
+        local rows = {}
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local ch = plr.Character
+                local head = ch and ch:FindFirstChild("Head")
+                local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+                local isAlive = IsAlive(plr)
+                local mate = IsTeammate(plr)
+                if isAlive then alive += 1; if mate then mates += 1 else enemies += 1 end end
+                local box = shared.MH_Boxes and shared.MH_Boxes[plr]
+                local boxShown = box and box.Visible or false
+                if boxShown then drawn += 1 end
+                local dist, onScreen, moved = "-", "-", "-"
+                if hrp and cam then
+                    dist = string.format("%.0f", (hrp.Position - cam.CFrame.Position).Magnitude)
+                    if head then local _, o = cam:WorldToViewportPoint(head.Position) onScreen = tostring(o) end
+                    local pv = prev[plr]
+                    if pv then moved = string.format("%.1f", (hrp.Position - pv).Magnitude) end
+                    prev[plr] = hrp.Position
+                end
+                if isAlive then
+                    rows[#rows + 1] = string.format("  %s team=%s %s dist=%s onScreen=%s box=%s movedSince2s=%s parent=%s",
+                        plr.Name, tostring(GetTeam(plr)), mate and "TEAMMATE" or "ENEMY", dist, onScreen, tostring(boxShown), moved,
+                        ch and ch.Parent and ch.Parent.Name or "nil")
+                end
+            end
+        end
+        log(string.format("SNAP fps=%.0f alive=%d enemies=%d teammates=%d boxesDrawn=%d | me team=%s | Box=%s Skel=%s Names=%s Trig=%s headOnly=%s BigHeads=%s TeamCheck=%s",
+            fps, alive, enemies, mates, drawn, tostring(GetTeam(LocalPlayer)), tostring(shared.MH_BoxOn ~= false), tostring(Features.SkeletonESP),
+            tostring(Features.NameTags), tostring(Features.Triggerbot), tostring(Features.TriggerHeadOnly), tostring(Features.BigHeads), tostring(Features.TeamCheck)))
+        for _, r in ipairs(rows) do log(r) end
+    end
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            if on then pcall(snapshot) end
+        end
+    end)
+    toggle(TAB, "Debug log (every 2s)", true, function(v) on = v end)
+    button(TAB, "Copy log to clipboard", function()
+        local text = table.concat(shared.MH_Ring or {}, "\n")
+        local copy = setclipboard or toclipboard or (syn and syn.write_clipboard)
+        if copy then pcall(copy, text); log("log copied to clipboard (" .. #text .. " chars)") else log("no clipboard function; open king_hub/hub_log.txt") end
+    end)
+    button(TAB, "Clear log", function() shared.MH_Ring = {} end)
+end)
 
 -- =============================================================================
 --  MAIN HEARTBEAT FOR PLANTED BOMB SCAN
