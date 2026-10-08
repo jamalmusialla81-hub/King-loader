@@ -3117,6 +3117,16 @@ shared.MH_Try('Grenades tab', function()
         button(TAB, "Could not load game modules", function() end)
         return
     end
+    GetRayIgnore = (function(raw)
+        -- the game's GetRayIgnore can error when it is a copy loaded outside the game's own scripts (e.g. on Xeno):
+        -- fall back to ignoring the camera and our own character
+        return function()
+            local ok, r = pcall(raw)
+            if ok and type(r) == "table" then return r end
+            local lpc = game:GetService("Players").LocalPlayer.Character
+            return {workspace.CurrentCamera, lpc}
+        end
+    end)(GetRayIgnore)
 
     local enabled, jumpThrow = true, false
     local jumpOffset = 3   -- how much higher the camera is at jump-throw release (studs)
@@ -4172,7 +4182,17 @@ end)
 shared.MH_Try('Results tab', function()
     local RS = game:GetService("ReplicatedStorage")
     local TAB = shared.MH_GrenTab or createTab("📊", "Results")
-    local GetRayIgnore = require(RS.Components.Common.GetRayIgnore)
+    local okGRI, rawGRI = pcall(require, RS.Components.Common.GetRayIgnore)
+    local GetRayIgnore = (function(raw)
+        -- the game's GetRayIgnore can error when it is a copy loaded outside the game's own scripts (e.g. on Xeno):
+        -- fall back to ignoring the camera and our own character
+        return function()
+            local ok, r = pcall(raw)
+            if ok and type(r) == "table" then return r end
+            local lpc = game:GetService("Players").LocalPlayer.Character
+            return {workspace.CurrentCamera, lpc}
+        end
+    end)(okGRI and rawGRI or function() error("unavailable") end)
     local session = {flashed = 0, teamFlashed = 0, damaged = 0, damage = 0, throws = 0}
     local lastLine = "no grenades thrown yet"
     local hudOn = true
