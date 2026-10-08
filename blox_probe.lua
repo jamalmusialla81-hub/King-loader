@@ -30,6 +30,19 @@ for _, plr in ipairs(Players:GetPlayers()) do
             tostring(hum ~= nil), tostring(hum and hum.Health), tostring(plr:GetAttribute("Dead")), tostring(dist), onScreen))
     end
 end
+-- do culled characters (parked outside workspace) still move?
+local culled = {}
+for _, plr in ipairs(Players:GetPlayers()) do
+    local ch = plr ~= lp and plr.Character
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    if hrp and not ch:IsDescendantOf(workspace) then culled[plr.Name] = {hrp, hrp.Position} end
+end
+task.wait(1.5)
+for name, v in pairs(culled) do
+    local moved = (v[1].Position - v[2]).Magnitude
+    p(string.format("culled %s moved %.2f studs in 1.5s (%s)", name, moved, moved > 0.05 and "UPDATING" or "FROZEN"))
+end
+if next(culled) == nil then p("no culled characters this time - run again when the list shows parent=ReplicatedStorage._PVS_CulledCharacters") end
 pcall(function() if makefolder and not isfolder("king_hub") then makefolder("king_hub") end end)
 pcall(writefile, "king_hub/blox_probe.txt", table.concat(out, "\n") .. "\n")
 p("done")
