@@ -22,7 +22,9 @@ for _, plr in ipairs(Players:GetPlayers()) do
 end
 table.sort(list, function(a, b) return a.d < b.d end)
 local picked = {}
-for i = 1, math.min(3, #list) do picked[i] = list[i].plr end
+for i = 1, math.min(2, #list) do picked[#picked + 1] = list[i].plr end              -- 2 nearest
+for i = #list, math.max(3, #list - 1), -1 do picked[#picked + 1] = list[i].plr end  -- 2 farthest
+for _, e in ipairs(list) do p(string.format("%s alive at %.0f studs", e.plr.Name, e.d)) end
 if #picked == 0 then p("no living players found - join a match with others alive and run again") end
 
 -- parts of each character
@@ -31,6 +33,8 @@ for _, plr in ipairs(picked) do
     local ch = plr.Character
     local names = {}
     for _, c in ipairs(ch:GetChildren()) do names[#names + 1] = c.Name .. "(" .. c.ClassName .. ")" end
+    local h0 = plr.Character:FindFirstChild("HumanoidRootPart")
+    p(plr.Name .. " is " .. (h0 and math.floor((h0.Position - cam.CFrame.Position).Magnitude) or "?") .. " studs away")
     p(plr.Name .. " children: " .. table.concat(names, ", "))
     p(plr.Name .. " PrimaryPart=" .. tostring(ch.PrimaryPart and ch.PrimaryPart.Name) .. " Head-HRP offset=" ..
         (function() local h, r = ch:FindFirstChild("Head"), ch:FindFirstChild("HumanoidRootPart")
