@@ -950,13 +950,30 @@ if not (getactors and run_on_actor) then
             return math.asin(math.clamp(lv.Y, -1, 1)), math.atan2(-lv.X, -lv.Z)
         end
         local function wrap(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+        -- raw mouse movement since the last frame (GetMouseDelta reads 0 unless the mouse is locked Roblox's way)
+        local accX, accY = 0, 0
+        connect(UserInputService.InputChanged, function(i)
+            if i.UserInputType == Enum.UserInputType.MouseMovement then accX += i.Delta.X; accY += i.Delta.Y end
+        end)
+        local stat = {frames = 0, firing = 0, moved = 0, sent = 0, kick = 0, lastLog = 0}
         RunService:BindToRenderStep("king_op1_rcs", Enum.RenderPriority.Camera.Value + 5, function()
             local cam = Workspace.CurrentCamera
             if not cam then return end
             local p, y = angles(cam)
             local lastP, lastY = rcs.lastP, rcs.lastY
             rcs.lastP, rcs.lastY = p, y
-            local md = UserInputService:GetMouseDelta()
+            local md = Vector2.new(accX, accY)
+            accX, accY = 0, 0
+            if md.Magnitude == 0 then md = UserInputService:GetMouseDelta() end
+            stat.frames += 1
+            if md.Magnitude > 0 then stat.moved += 1 end
+            if os.clock() - stat.lastLog > 4 then
+                stat.lastLog = os.clock()
+                log(string.format("recoil control: on=%s gun=%s frames=%d mouseMovedFrames=%d firingFrames=%d kick=%.4frad corrections=%d k(hip)=%s k(ads)=%s",
+                    tostring(Cfg.NoRecoil), tostring(holdingGun()), stat.frames, stat.moved, stat.firing, stat.kick, stat.sent,
+                    rcs.k.hip and string.format("%.6f", rcs.k.hip) or "unlearned", rcs.k.ads and string.format("%.6f", rcs.k.ads) or "unlearned"))
+                stat.frames, stat.moved, stat.firing, stat.sent, stat.kick = 0, 0, 0, 0, 0
+            end
             if not lastP then return end
             local dP, dY = p - lastP, wrap(y - lastY)
             if math.abs(dP) > 0.35 or math.abs(dY) > 0.6 then rcs.debtP, rcs.debtY = 0, 0 return end   -- respawn / teleport
@@ -964,7 +981,7 @@ if not (getactors and run_on_actor) then
             local slot = ads and "ads" or "hip"
             local firing = Cfg.NoRecoil and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
                 and holdingGun() and not UserInputService:GetFocusedTextBox()
-            if firing then rcs.until_ = os.clock() + 0.6 end           -- keep correcting while the kick settles
+            if firing then rcs.until_ = os.clock() + 0.6; stat.firing += 1 end           -- keep correcting while the kick settles
             local k = rcs.k[slot]                                       -- radians of pitch per mouse unit
             if os.clock() > rcs.until_ then
                 rcs.debtP, rcs.debtY = 0, 0
@@ -985,6 +1002,7 @@ if not (getactors and run_on_actor) then
                 return
             end
             -- what the mouse explains vs what the camera did: the rest is recoil
+            stat.kick += math.max(0, dP - (-k * md.Y))
             rcs.debtP += dP - (-k * md.Y)
             rcs.debtY += dY - (-k * md.X)
             local s = (Cfg.RecoilStrength or 100) / 100
@@ -993,6 +1011,7 @@ if not (getactors and run_on_actor) then
             local ix, iy = math.round(mx), math.round(my)
             if ix ~= 0 or iy ~= 0 then
                 pcall(mousemoverel, ix, iy)                 -- kicked up/left -> pull down/right
+                stat.sent += 1
                 rcs.debtP -= iy * k
                 rcs.debtY -= ix * k
             end
