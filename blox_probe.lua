@@ -23,9 +23,10 @@ for _, plr in ipairs(Players:GetPlayers()) do
         local onScreen = "n/a"
         if head then local _, on = cam:WorldToViewportPoint(head.Position) onScreen = tostring(on) end
         local inWs = ch and ch:IsDescendantOf(workspace)
+        local parentName = ch and (ch.Parent and ch.Parent:GetFullName() or "nil") or "-"
         local dist = (hrp and cam) and math.floor((hrp.Position - cam.CFrame.Position).Magnitude) or "?"
-        p(string.format("%s | Team attr=%s | char=%s inWorkspace=%s head=%s hrp=%s hum=%s hp=%s Dead=%s | dist=%s onScreen=%s",
-            plr.Name, tostring(plr:GetAttribute("Team")), tostring(ch ~= nil), tostring(inWs), tostring(head ~= nil), tostring(hrp ~= nil),
+        p(string.format("%s | Team attr=%s | char=%s inWorkspace=%s parent=%s head=%s hrp=%s hum=%s hp=%s Dead=%s | dist=%s onScreen=%s",
+            plr.Name, tostring(plr:GetAttribute("Team")), tostring(ch ~= nil), tostring(inWs), parentName, tostring(head ~= nil), tostring(hrp ~= nil),
             tostring(hum ~= nil), tostring(hum and hum.Health), tostring(plr:GetAttribute("Dead")), tostring(dist), onScreen))
     end
 end

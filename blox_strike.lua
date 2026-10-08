@@ -943,7 +943,8 @@ local function IsAlive(plr)
     if not plr then return false end
     local char = plr.Character
     if not char then return false end
-    if not char.Parent then return false end
+    -- characters can sit outside workspace (not streamed in / stored elsewhere); only a destroyed one has no parent at all
+    if not char.Parent and not char:FindFirstChild("Head") then return false end
     local okD, dead = pcall(function() return plr:GetAttribute("Dead") end)
     if okD and dead == true then return false end
     local h = char:FindFirstChildOfClass("Humanoid")
