@@ -57,7 +57,20 @@ do
     local isExec = isexecutorclosure or checkclosure or isourclosure or is_synapse_function
     local killedConns, killedGuis = 0, 0
     pcall(function() if cleardrawcache then cleardrawcache() end end)
-    local function foreign(fn) local ok, r = pcall(isExec, fn) return ok and r end
+    -- Some executors report Roblox's and the game's own functions as "executor closures", so also require that the
+    -- function does not belong to a real script in the game (core scripts, chat, game code all do).
+    local function foreign(fn)
+        local ok, r = pcall(isExec, fn)
+        if not (ok and r) then return false end
+        local okE, env = pcall(getfenv, fn)
+        local scr = okE and type(env) == "table" and rawget(env, "script")
+        if typeof(scr) == "Instance" and scr:IsDescendantOf(game) then return false end
+        local okS, src = pcall(debug.info, fn, "s")
+        if okS and type(src) == "string" and (src:find("CoreGui", 1, true) or src:find("CorePackages", 1, true)
+            or src:find("ReplicatedStorage", 1, true) or src:find("ReplicatedFirst", 1, true) or src:find("PlayerScripts", 1, true)
+            or src:find("StarterPlayer", 1, true) or src:find("RobloxGui", 1, true)) then return false end
+        return true
+    end
     if getconnections and isExec then
         local Lighting = game:GetService("Lighting")
         local signals = {
@@ -82,8 +95,14 @@ do
         end
     end
     -- menus: any GUI (hidden GUI folder, CoreGui, PlayerGui) whose buttons run executor code
+    local PROTECTED = {RobloxGui = true, ExperienceChat = true, TopBarApp = true, PlayerList = true, RobloxPromptGui = true,
+        RobloxLoadingGUI = true, PurchasePromptApp = true, DevConsoleMaster = true, ThemeProvider = true, InGameMenu = true,
+        BubbleChat = true, HeadsetDisconnectedDialog = true, Chat = true}
     local function executorGui(g)
         if not (getconnections and isExec) then return false end
+        if PROTECTED[g.Name] then return false end
+        -- a GUI with its own scripts belongs to Roblox or the game, never to an executor menu
+        if g:FindFirstChildWhichIsA("LuaSourceContainer", true) then return false end
         local checked = 0
         for _, d in ipairs(g:GetDescendants()) do
             if d:IsA("GuiButton") then
@@ -1057,8 +1076,38 @@ if not (getactors and run_on_actor) then
                 and holdingGun() and not UserInputService:GetFocusedTextBox()
             if firing then rcs.until_ = os.clock() + 0.6; stat.firing += 1 end           -- keep correcting while the kick settles
             local k = rcs.k[slot]                                       -- radians of pitch per mouse unit
+            -- self-calibration: nudge the mouse a few units and see how far the camera turns
+            if rcs.probe then
+                local pr = rcs.probe
+                pr.frames += 1
+                if pr.frames >= 3 then
+                    local moved = p - pr.p0
+                    rcs.probe = nil
+                    pcall(mousemoverel, 0, -pr.dy)
+                    rcs.skipLearn = 2
+                    if not pr.userMoved and math.abs(moved) > 1e-5 then
+                        local est = -moved / pr.dy
+                        if est > 1e-5 and est < 0.05 then
+                            rcs.k[pr.slot] = est
+                            log(string.format("recoil control: calibrated %s, %.6f rad per mouse unit", pr.slot, est))
+                        end
+                    elseif not pr.userMoved then
+                        log("recoil control: calibration nudge did not move the camera (mousemoverel ignored by the game?)")
+                    end
+                elseif firing or (md.Magnitude > 0.5 and pr.frames > 1) then
+                    pr.userMoved = true
+                end
+                return
+            end
+            if rcs.skipLearn and rcs.skipLearn > 0 then rcs.skipLearn -= 1; return end
             if os.clock() > rcs.until_ then
                 rcs.debtP, rcs.debtY = 0, 0
+                if not k and holdingGun() and (not rcs.lastProbe or os.clock() - rcs.lastProbe > 1.5) then
+                    rcs.lastProbe = os.clock()
+                    rcs.probe = {dy = 8, p0 = p, slot = slot, frames = 0}
+                    pcall(mousemoverel, 0, 8)
+                    return
+                end
                 -- learn the scale from your own vertical mouse movement while not shooting
                 if math.abs(md.Y) >= 3 and math.abs(dP) > 1e-4 then
                     local est = -dP / md.Y
