@@ -3,7 +3,9 @@
 -- Run:  loadstring(game:HttpGet("https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/load.lua"))()
 -- Everything is fetched over HttpGet from GitHub, so no workspace files are needed (MacSploit and Xeno both work).
 local RS = game:GetService("ReplicatedStorage")
-local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/"
+-- set getgenv().KING_BRANCH = "<branch>" before running to load every script from a test branch instead of main
+local BRANCH = (getgenv and getgenv().KING_BRANCH) or "main"
+local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/" .. BRANCH .. "/"
 
 local GAMES = {
     {name = "Blox Strike", path = "blox_strike.lua", detect = function()

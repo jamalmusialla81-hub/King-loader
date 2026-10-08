@@ -13,7 +13,9 @@ local CoreGui          = game:GetService("CoreGui")
 local HttpService      = game:GetService("HttpService")
 local RS               = game:GetService("ReplicatedStorage")
 
-local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/main/"
+-- set getgenv().KING_BRANCH = "<branch>" before running to load every script from a test branch instead of main
+local BRANCH = (getgenv and getgenv().KING_BRANCH) or "main"
+local BASE = "https://raw.githubusercontent.com/jamalmusialla81-hub/King-loader/" .. BRANCH .. "/"
 
 local GuiParent = CoreGui
 pcall(function() if gethui then GuiParent = gethui() end end)
