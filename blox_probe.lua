@@ -6,7 +6,10 @@ local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 local out = {}
-local function p(s) out[#out + 1] = tostring(s); print("[BXP] " .. tostring(s)) end
+local function p(s)
+    out[#out + 1] = tostring(s); print("[BXP] " .. tostring(s))
+    if shared and shared.MH_Log then pcall(shared.MH_Log, "BXP " .. tostring(s)) end   -- also goes into king_hub/hub_log.txt
+end
 p("me: " .. lp.Name .. " Team attr=" .. tostring(lp:GetAttribute("Team")) .. " Roblox Team=" .. tostring(lp.Team))
 -- frame time
 local acc, n = 0, 0
@@ -46,3 +49,7 @@ if next(culled) == nil then p("no culled characters this time - run again when t
 pcall(function() if makefolder and not isfolder("king_hub") then makefolder("king_hub") end end)
 pcall(writefile, "king_hub/blox_probe.txt", table.concat(out, "\n") .. "\n")
 p("done")
+-- copy the whole result to the clipboard so it can be pasted straight into the chat
+local text = table.concat(out, "\n")
+local copy = setclipboard or toclipboard or (syn and syn.write_clipboard)
+if copy then pcall(copy, text); print("[BXP] copied to clipboard - just paste it") else print("[BXP] no clipboard function; see king_hub/blox_probe.txt or hub_log.txt") end
