@@ -443,8 +443,17 @@ end)
 -- N0IR script does) and only the world is raycast, to check nothing solid is in the way.
 local holding = false
 local acquiredAt = nil
+-- You holding fire yourself: the triggerbot must never press or release over you, or its release cancels your
+-- hold and full-auto guns only fire one shot at a time.
+local userHeld = false
+connect(UserInputService.InputBegan, function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 and not holding then userHeld = true end
+end)
+connect(UserInputService.InputEnded, function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 and not holding then userHeld = false end
+end)
 local function press()
-    if holding then return end
+    if holding or userHeld then return end
     holding = true
     if mouse1press then pcall(mouse1press)
     else pcall(function()
@@ -456,6 +465,7 @@ end
 local function release()
     if not holding then return end
     holding = false
+    if userHeld then return end                 -- you took over: leave the button down for you
     if mouse1release then pcall(mouse1release)
     else pcall(function()
         local vim = game:GetService("VirtualInputManager")
