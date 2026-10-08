@@ -66,7 +66,7 @@ local Cfg = {
     Highlight = false, TeamCheck = true, ShowDead = false, MaxDist = 900,
     Chams = true, ChamsColor = 2, ChamsTrans = 0.45, ChamsPulse = false,
     Trigger = true, TriggerDelay = 0.0, TriggerRange = 1000, TriggerWallCheck = true,
-    NoRecoil = true,
+    NoRecoil = true, RecoilStrength = 100,
     GrenadeAssist = true, GrenadeLock = true, GrenadeMarkers = false,
     Barricades = true, ThinWalls = false, TriggerHeadOnly = false,
     Silent = true, SilentFov = 250, SilentRange = 100, SilentPart = 1, SilentVisible = true, TriggerOnLock = true,
@@ -934,6 +934,73 @@ task.spawn(function()
     end
 end)
 
+-- ---------------------------------------------------------------- recoil control (no actor support)
+-- Executors without getactors/run_on_actor (e.g. Xeno) can't patch the gun, so this counters the kick with the
+-- mouse instead. Every frame it compares how far the camera turned with how far the mouse moved: whatever is left
+-- over while you shoot is recoil, and the mouse is pulled back by that much. Mouse units per radian are learned from
+-- your own mouse movement (separately for hip fire and aiming down sights), so it works at any sensitivity.
+if not (getactors and run_on_actor) then
+    if not mousemoverel then
+        log("recoil control: executor has no mousemoverel - no recoil not available")
+    else
+        log("recoil control: no actor support, using mouse recoil control")
+        local rcs = {k = {}, debtP = 0, debtY = 0, lastP = nil, lastY = nil, until_ = 0, logged = 0}
+        local function angles(cam)
+            local lv = cam.CFrame.LookVector
+            return math.asin(math.clamp(lv.Y, -1, 1)), math.atan2(-lv.X, -lv.Z)
+        end
+        local function wrap(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+        RunService:BindToRenderStep("king_op1_rcs", Enum.RenderPriority.Camera.Value + 5, function()
+            local cam = Workspace.CurrentCamera
+            if not cam then return end
+            local p, y = angles(cam)
+            local lastP, lastY = rcs.lastP, rcs.lastY
+            rcs.lastP, rcs.lastY = p, y
+            local md = UserInputService:GetMouseDelta()
+            if not lastP then return end
+            local dP, dY = p - lastP, wrap(y - lastY)
+            if math.abs(dP) > 0.35 or math.abs(dY) > 0.6 then rcs.debtP, rcs.debtY = 0, 0 return end   -- respawn / teleport
+            local ads = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+            local slot = ads and "ads" or "hip"
+            local firing = Cfg.NoRecoil and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+                and holdingGun() and not UserInputService:GetFocusedTextBox()
+            if firing then rcs.until_ = os.clock() + 0.6 end           -- keep correcting while the kick settles
+            local k = rcs.k[slot]                                       -- radians of pitch per mouse unit
+            if os.clock() > rcs.until_ then
+                rcs.debtP, rcs.debtY = 0, 0
+                -- learn the scale from your own vertical mouse movement while not shooting
+                if math.abs(md.Y) >= 3 and math.abs(dP) > 1e-4 then
+                    local est = -dP / md.Y
+                    if est > 1e-5 and est < 0.05 then
+                        rcs.k[slot] = k and (k + (est - k) * 0.15) or est
+                    end
+                end
+                return
+            end
+            if not k then
+                if os.clock() - rcs.logged > 5 then
+                    rcs.logged = os.clock()
+                    log("recoil control: move your mouse up/down a bit (" .. slot .. ") so it can learn your sensitivity")
+                end
+                return
+            end
+            -- what the mouse explains vs what the camera did: the rest is recoil
+            rcs.debtP += dP - (-k * md.Y)
+            rcs.debtY += dY - (-k * md.X)
+            local s = (Cfg.RecoilStrength or 100) / 100
+            local mx = math.clamp(rcs.debtY / k * s, -60, 60)
+            local my = math.clamp(rcs.debtP / k * s, -60, 60)
+            local ix, iy = math.round(mx), math.round(my)
+            if ix ~= 0 or iy ~= 0 then
+                pcall(mousemoverel, ix, iy)                 -- kicked up/left -> pull down/right
+                rcs.debtP -= iy * k
+                rcs.debtY -= ix * k
+            end
+        end)
+        cleanups[#cleanups + 1] = function() pcall(function() RunService:UnbindFromRenderStep("king_op1_rcs") end) end
+    end
+end
+
 -- ---------------------------------------------------------------- silent aim
 -- Runs in the game's actor like the no-recoil patch: Gun.get_shoot_look is wrapped so that, when an enemy is inside
 -- the lock radius and range, bullets are aimed at them instead of where you look. Your camera never moves.
@@ -1631,6 +1698,7 @@ addToggle(tCmb, "Grenade assist (works out the throw angle)", "GrenadeAssist")
 addToggle(tCmb, "Grenade lock-on (hold fire or aim with a grenade)", "GrenadeLock")
 addToggle(tCmb, "Grenade markers (floating balls, off by default)", "GrenadeMarkers")
 addToggle(tCmb, "No recoil", "NoRecoil")
+addSlider(tCmb, "Recoil control strength (no-actor executors)", "RecoilStrength", 0, 150, function(v) return string.format("%d%%", math.floor(v)) end)
 addToggle(tCmb, "Triggerbot", "Trigger")
 addToggle(tCmb, "Wall check (don't shoot through walls)", "TriggerWallCheck")
 addSlider(tCmb, "Fire delay", "TriggerDelay", 0, 0.5, function(v) return string.format("%.2fs", v) end)
