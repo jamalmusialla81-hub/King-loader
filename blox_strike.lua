@@ -1721,7 +1721,13 @@ local function heardTarget(cam, crosshair)
                 if on and sp.Z > 0 and sp.Z <= Features.TriggerbotRange then
                     -- about a body width on screen, a bit wider the older the sound is
                     local px = (2.2 + (now - h.t) * 3) / sp.Z * cam.ViewportSize.Y / (2 * math.tan(math.rad(cam.FieldOfView / 2)))
-                    if (Vector2.new(sp.X, sp.Y) - crosshair).Magnitude <= math.max(px, 4) then return plr, h end
+                    local off = (Vector2.new(sp.X, sp.Y) - crosshair).Magnitude
+                    if off <= math.max(px, 4) then return plr, h, off, px end
+                    if off <= math.max(px, 4) * 3 and shared.MH_Log and now - (Features.LastHeardNearLog or 0) > 1 then
+                        Features.LastHeardNearLog = now
+                        shared.MH_Log(string.format("TRIGGER heard near-miss %s: crosshair %.0fpx off, target radius %.0fpx, sound %s %.1fs old, %.0f studs away",
+                            plr.Name, off, math.max(px, 4), tostring(h.what), now - h.t, sp.Z))
+                    end
                 end
             end
         end
@@ -1744,10 +1750,14 @@ local function TryTriggerOnce()
     local result = workspace:Raycast(ray.Origin, ray.Direction * Features.TriggerbotRange, triggerParams)
     local targetPlr = result and result.Instance and getPlayerFromPart(result.Instance)
     if not targetPlr then
-        local hp, h = heardTarget(cam, crosshair)
+        local hp, h, off, rad = heardTarget(cam, crosshair)
         if hp then
             Features.LastShotAt = now
-            if shared.MH_Log then shared.MH_Log(string.format("TRIGGER fire at HEARD %s (%s %.1fs ago)", hp.Name, tostring(h.what), os.clock() - h.t)) end
+            local wall = result and result.Instance
+            if shared.MH_Log then shared.MH_Log(string.format("TRIGGER fire at HEARD %s (%s %.1fs ago, crosshair %.0f/%.0fpx, %.0f studs) first wall: %s (%s, %.0f studs)",
+                hp.Name, tostring(h.what), os.clock() - h.t, off or -1, rad or -1, (h.pos - cam.CFrame.Position).Magnitude,
+                wall and wall:GetFullName() or "none", wall and tostring(wall.Material) or "-", wall and (result.Position - ray.Origin).Magnitude or 0)) end
+            shared.MH_HeardShotAt = {plr = hp, t = os.clock()}
             pcall(function()
                 VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, true, game, 1)
                 task.wait(0.01)
@@ -4817,6 +4827,7 @@ shared.MH_Try('Box ESP + gun chams', function()
     -- ones are stored uncompressed (raw blocks) and decoded here. Listen-only.
     local heard = {}          -- player -> {pos, t, what}
     local culledAt = {}       -- player -> os.clock() when they went hidden
+    local frozenAt = {}       -- player -> where their body froze when they went hidden
     shared.MH_Heard = heard
     local function unzstd(b)
         local len = buffer.len(b)
@@ -4890,15 +4901,29 @@ shared.MH_Try('Box ESP + gun chams', function()
         return name:find("Bounce") ~= nil or name:find("Explode") ~= nil or name:find("Detonat") ~= nil
     end
     local classesSeen, classLog = {}, 0
+    -- detailed logging (tuning data): every decision is counted, a sample of them is written out
+    local hs = {got = 0, skipped = 0, nearVisible = 0, pinned = 0, noCandidate = 0, ambiguous = 0}
+    shared.MH_HeardStats = hs
+    local logBudget, logBudgetAt = 0, 0
+    local function hlog(msg)
+        local now = os.clock()
+        if now - logBudgetAt > 1 then logBudget, logBudgetAt = 4, now end      -- at most 4 detail lines a second
+        if logBudget > 0 then logBudget -= 1; shared.MH_Log("heard: " .. msg) end
+    end
+    local function fmtV(v) return string.format("(%.0f,%.0f,%.0f)", v.X, v.Y, v.Z) end
     local function pin(pos, what)
         local now = os.clock()
         -- made by someone you can already see (or you)? then it's not news
         for _, pl in ipairs(Players:GetPlayers()) do
             local ch = pl.Character
             local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-            if hrp and ch.Parent and ch.Parent.Name ~= "_PVS_CulledCharacters" and (hrp.Position - pos).Magnitude < 8 then return end
+            if hrp and ch.Parent and ch.Parent.Name ~= "_PVS_CulledCharacters" and (hrp.Position - pos).Magnitude < 8 then
+                hs.nearVisible += 1
+                return
+            end
         end
         local best, bestD
+        local cands = {}
         for _, pl in ipairs(Players:GetPlayers()) do
             local ch = pl.Character
             local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
@@ -4909,11 +4934,50 @@ shared.MH_Try('Box ESP + gun chams', function()
                 else from, since = hrp.Position, culledAt[pl] or now end
                 local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(from.X, 0, from.Z)).Magnitude
                 local reach = 22 * (now - since) + 12                   -- ~run speed since they were last placed
-                if d <= reach and (not bestD or d < bestD) then best, bestD = pl, d end
+                cands[#cands + 1] = string.format("%s%s d=%.0f reach=%.0f", pl.Name, IsTeammate(pl) and "(team)" or "", d, reach)
+                if d <= reach then
+                    if bestD and math.abs(d - bestD) < 10 then hs.ambiguous += 1 end
+                    if not bestD or d < bestD then best, bestD = pl, d end
+                end
             end
         end
-        if best then heard[best] = {pos = pos, t = now, what = what} end
+        if best then
+            hs.pinned += 1
+            heard[best] = {pos = pos, t = now, what = what}
+            hlog(string.format("%s at %s -> %s%s (%.0f studs from last known) | candidates: %s", what, fmtV(pos), best.Name,
+                IsTeammate(best) and " (teammate)" or "", bestD, table.concat(cands, ", ")))
+        else
+            hs.noCandidate += 1
+            hlog(string.format("%s at %s -> nobody (hidden candidates: %s)", what, fmtV(pos), #cands > 0 and table.concat(cands, ", ") or "none"))
+        end
     end
+    -- accuracy check: when a hidden enemy shows up again, how far was their last heard spot (and last-seen spot)?
+    local acc = {n = 0, heardErr = 0, heardN = 0, seenErr = 0}
+    shared.MH_HeardAcc = acc
+    function shared.MH_HeardCheckReturn(plr, frozenPos, realPos)
+        local h = heard[plr]
+        acc.n += 1
+        acc.seenErr += (frozenPos - realPos).Magnitude
+        local line = string.format("%s back: last-seen box was %.0f studs off", plr.Name, (frozenPos - realPos).Magnitude)
+        if h then
+            local e = (h.pos - realPos).Magnitude
+            acc.heardN += 1; acc.heardErr += e
+            line ..= string.format(", heard box (%s %.1fs before) was %.0f studs off", tostring(h.what), os.clock() - h.t, e)
+        else
+            line ..= ", never heard while hidden"
+        end
+        shared.MH_Log("heard: " .. line)
+    end
+    task.spawn(function()
+        while task.wait(10) do
+            if hs.got > 0 then
+                shared.MH_Log(string.format("heard stats 10s: sounds=%d skipped(grenade/world)=%d nearVisible=%d pinned=%d noCandidate=%d ambiguous=%d | returns=%d avg error: last-seen %.0f studs, heard %s",
+                    hs.got, hs.skipped, hs.nearVisible, hs.pinned, hs.noCandidate, hs.ambiguous, acc.n,
+                    acc.n > 0 and acc.seenErr / acc.n or 0, acc.heardN > 0 and string.format("%.0f studs (%d)", acc.heardErr / acc.heardN, acc.heardN) or "-"))
+                for k in pairs(hs) do hs[k] = 0 end
+            end
+        end
+    end)
     task.spawn(function()
         local function hook(name, fn)
             -- the game also has non-remote objects with these names, so look for the remote itself
@@ -4932,17 +4996,38 @@ shared.MH_Try('Box ESP + gun chams', function()
         hook("ReplicateSound", function(v)
             local pos = v.Position
             if typeof(pos) ~= "Vector3" then return end
+            hs.got += 1
             local cls = tostring(v.Class or "?")
             if classLog < 25 and not classesSeen[cls .. "/" .. tostring(v.Name)] then
                 classesSeen[cls .. "/" .. tostring(v.Name)] = true
                 classLog += 1
                 shared.MH_Log("heard ESP: sound class=" .. cls .. " name=" .. tostring(v.Name))
             end
-            if skipSound(cls, tostring(v.Name or "")) then return end
+            if skipSound(cls, tostring(v.Name or "")) then hs.skipped += 1 return end
             pin(pos, cls == "FloorSounds" and "step" or tostring(v.Name or cls))
         end)
+        -- hit confirmation for heard shots: log damage / kill messages that arrive within 1 s of one
+        local function dump(v, depth)
+            depth = depth or 0
+            if type(v) == "table" then
+                if depth > 2 then return "{...}" end
+                local parts = {}
+                for k, x in pairs(v) do parts[#parts + 1] = tostring(k) .. "=" .. dump(x, depth + 1) end
+                table.sort(parts)
+                return "{" .. table.concat(parts, ", ") .. "}"
+            elseif typeof(v) == "Vector3" then return string.format("(%.0f,%.0f,%.0f)", v.X, v.Y, v.Z) end
+            return tostring(v)
+        end
+        for _, nm in ipairs({"CharacterDamaged", "CreateDamageIndicator", "UIPlayerKilled", "CharacterDied"}) do
+            task.spawn(hook, nm, function(v)
+                local shot = shared.MH_HeardShotAt
+                if shot and os.clock() - shot.t < 1 then
+                    shared.MH_Log(string.format("heard shot follow-up (%.2fs after shooting at %s): %s %s", os.clock() - shot.t, shot.plr.Name, nm, dump(v)))
+                end
+            end)
+        end
         hook("CreateTracer", function(v)
-            if typeof(v.Origin) == "Vector3" then pin(v.Origin, "shot") end
+            if typeof(v.Origin) == "Vector3" then hs.got += 1; pin(v.Origin, "shot") end
         end)
     end)
 
@@ -4961,9 +5046,15 @@ shared.MH_Try('Box ESP + gun chams', function()
                     local shift = Vector3.zero
                     local heardAge
                     if stale then
-                        culledAt[plr] = culledAt[plr] or os.clock()
+                        if not culledAt[plr] then
+                            culledAt[plr] = os.clock()
+                            if hrp then frozenAt[plr] = hrp.Position end
+                        end
                     else
-                        culledAt[plr], heard[plr] = nil, nil
+                        if culledAt[plr] and frozenAt[plr] and hrp and os.clock() - culledAt[plr] > 1 then
+                            pcall(shared.MH_HeardCheckReturn, plr, frozenAt[plr], hrp.Position)
+                        end
+                        culledAt[plr], heard[plr], frozenAt[plr] = nil, nil, nil
                     end
                     if stale and hrp then
                         local np = net[plr.UserId]
