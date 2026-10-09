@@ -4771,6 +4771,132 @@ shared.MH_Try('Box ESP + gun chams', function()
         end
     end
 
+    -- ---------- heard ESP ----------
+    -- Hidden players' movement isn't sent, but their SOUNDS are (ReplicateSound: footsteps, scoping, reloads...) and
+    -- so are their shots (CreateTracer has the muzzle Origin). Each of those is pinned on the hidden player who could
+    -- have made it (nearest one that could have walked there since they were last placed), and that player's box is
+    -- drawn there in yellow, fading out over a few seconds. Messages are 01 + zstd frame + serialized table; small
+    -- ones are stored uncompressed (raw blocks) and decoded here. Listen-only.
+    local heard = {}          -- player -> {pos, t, what}
+    local culledAt = {}       -- player -> os.clock() when they went hidden
+    shared.MH_Heard = heard
+    local function unzstd(b)
+        local len = buffer.len(b)
+        if len < 10 or buffer.readu8(b, 0) ~= 1 or buffer.readu32(b, 1) ~= 0xFD2FB528 then return nil end
+        local desc = buffer.readu8(b, 5)
+        local single = bit32.band(bit32.rshift(desc, 5), 1) == 1
+        local pos = 6 + (single and 0 or 1) + ({0, 1, 2, 4})[bit32.band(desc, 3) + 1]
+        pos += ({single and 1 or 0, 2, 4, 8})[bit32.rshift(desc, 6) + 1]
+        local parts, total = {}, 0
+        while pos + 3 <= len do
+            local h = buffer.readu8(b, pos) + buffer.readu8(b, pos + 1) * 256 + buffer.readu8(b, pos + 2) * 65536
+            pos += 3
+            local btype, size = math.floor(h / 2) % 4, math.floor(h / 8)
+            if btype == 0 then
+                if pos + size > len then return nil end
+                parts[#parts + 1] = {pos, size}; total += size; pos += size
+            else
+                return nil                                   -- RLE / really compressed: not needed for these
+            end
+            if h % 2 == 1 then break end
+        end
+        local o = buffer.create(total)
+        local w = 0
+        for _, pt in ipairs(parts) do buffer.copy(o, w, b, pt[1], pt[2]); w += pt[2] end
+        return o
+    end
+    local function readValue(b, i)
+        local t = buffer.readu8(b, i); i += 1
+        if t == 0x06 or t == 0x05 then
+            local n = buffer.readu32(b, i); i += 4
+            if n > 200 then error("size") end
+            local d = {}
+            for k = 1, n do
+                if t == 0x06 then
+                    local key, v
+                    key, i = readValue(b, i)
+                    v, i = readValue(b, i)
+                    d[tostring(key)] = v
+                else
+                    d[k], i = readValue(b, i)
+                end
+            end
+            return d, i
+        elseif t == 0x04 then
+            local n = buffer.readu32(b, i); i += 4
+            return buffer.readstring(b, i, n), i + n
+        elseif t == 0x03 then return buffer.readf64(b, i), i + 8
+        elseif t == 0x07 then return Vector3.new(buffer.readf32(b, i), buffer.readf32(b, i + 4), buffer.readf32(b, i + 8)), i + 12
+        elseif t == 0x09 then return Vector3.new(buffer.readf32(b, i), buffer.readf32(b, i + 4), buffer.readf32(b, i + 8)), i + 48   -- CFrame: position only
+        elseif t == 0x0c then return nil, i + 4                                                                               -- instance ref
+        elseif t == 0x00 then return nil, i
+        elseif t == 0x01 then return false, i
+        elseif t == 0x02 then return true, i
+        end
+        error("type")
+    end
+    local function decode(b)
+        local raw = unzstd(b)
+        if not raw then return nil end
+        local ok, v = pcall(readValue, raw, 0)
+        return ok and v or nil
+    end
+    -- grenades / bomb / world effects make sounds away from any player: never pin those on someone
+    local SKIP_CLASS = {Flashbang = true, Smoke = true, Molotov = true, Incendiary = true, HE = true, Decoy = true,
+        Grenade = true, Bomb = true, C4 = true, Impact = true, Bullet = true, Explosion = true, Fire = true}
+    local classesSeen, classLog = {}, 0
+    local function pin(pos, what)
+        local now = os.clock()
+        -- made by someone you can already see (or you)? then it's not news
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local ch = pl.Character
+            local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            if hrp and ch.Parent and ch.Parent.Name ~= "_PVS_CulledCharacters" and (hrp.Position - pos).Magnitude < 8 then return end
+        end
+        local best, bestD
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local ch = pl.Character
+            local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            if pl ~= LocalPlayer and hrp and ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters" and IsAlive(pl) then
+                local h = heard[pl]
+                local from, since
+                if h and h.t >= (culledAt[pl] or 0) then from, since = h.pos, h.t
+                else from, since = hrp.Position, culledAt[pl] or now end
+                local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(from.X, 0, from.Z)).Magnitude
+                local reach = 22 * (now - since) + 12                   -- ~run speed since they were last placed
+                if d <= reach and (not bestD or d < bestD) then best, bestD = pl, d end
+            end
+        end
+        if best then heard[best] = {pos = pos, t = now, what = what} end
+    end
+    task.spawn(function()
+        local function hook(name, fn)
+            local r = RS:FindFirstChild(name, true)
+            if not r then
+                local t0 = os.clock()
+                repeat task.wait(1); r = RS:FindFirstChild(name, true) until r or os.clock() - t0 > 20
+            end
+            if not (r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent"))) then shared.MH_Log("heard ESP: " .. name .. " not found") return end
+            KING_KC(r.OnClientEvent, function(b) if typeof(b) == "buffer" then local v = decode(b); if type(v) == "table" then fn(v) end end end)
+            shared.MH_Log("heard ESP: listening to " .. name)
+        end
+        hook("ReplicateSound", function(v)
+            local pos = v.Position
+            if typeof(pos) ~= "Vector3" then return end
+            local cls = tostring(v.Class or "?")
+            if classLog < 25 and not classesSeen[cls .. "/" .. tostring(v.Name)] then
+                classesSeen[cls .. "/" .. tostring(v.Name)] = true
+                classLog += 1
+                shared.MH_Log("heard ESP: sound class=" .. cls .. " name=" .. tostring(v.Name))
+            end
+            if SKIP_CLASS[cls] then return end
+            pin(pos, cls == "FloorSounds" and "step" or tostring(v.Name or cls))
+        end)
+        hook("CreateTracer", function(v)
+            if typeof(v.Origin) == "Vector3" then pin(v.Origin, "shot") end
+        end)
+    end)
+
     KING_RENDER(function()
         local cam = workspace.CurrentCamera
         -- boxes
@@ -4784,6 +4910,12 @@ shared.MH_Try('Box ESP + gun chams', function()
                     local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
                     -- hidden (culled) players: move the frozen body to the real position from the network snapshots
                     local shift = Vector3.zero
+                    local heardAge
+                    if stale then
+                        culledAt[plr] = culledAt[plr] or os.clock()
+                    else
+                        culledAt[plr], heard[plr] = nil, nil
+                    end
                     if stale and hrp then
                         local np = net[plr.UserId]
                         if np and os.clock() - np.t < 1.5 then
@@ -4791,6 +4923,11 @@ shared.MH_Try('Box ESP + gun chams', function()
                             shift = (np.pos + np.vel * ahead) - hrp.Position
                             stale = false
                         end
+                    end
+                    -- heard / shot while hidden: draw them where the sound came from
+                    if stale and hrp and heard[plr] and os.clock() - heard[plr].t < 4 then
+                        heardAge = os.clock() - heard[plr].t
+                        shift = heard[plr].pos - hrp.Position
                     end
                     if head and hrp then
                         local hp, onH = cam:WorldToViewportPoint(head.Position + shift + Vector3.new(0, 0.6, 0))
@@ -4802,8 +4939,13 @@ shared.MH_Try('Box ESP + gun chams', function()
                                 local f = boxes[plr] or makeBox(plr)
                                 local st = f:FindFirstChildOfClass("UIStroke")
                                 if st then
-                                    st.Color = stale and Color3.fromRGB(255, 160, 40) or Color3.fromRGB(255, 60, 60)
-                                    st.Transparency = stale and 0.6 or 0
+                                    if heardAge then
+                                        st.Color = Color3.fromRGB(255, 230, 60)                 -- heard: yellow, fading
+                                        st.Transparency = math.clamp(heardAge / 4, 0, 0.75)
+                                    else
+                                        st.Color = stale and Color3.fromRGB(255, 160, 40) or Color3.fromRGB(255, 60, 60)
+                                        st.Transparency = stale and 0.6 or 0
+                                    end
                                 end
                                 f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
                                 f.Size = UDim2.fromOffset(w, h)
