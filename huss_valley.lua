@@ -728,17 +728,24 @@ local function findZones()
     return zones
 end
 local function goalFor(me)
+    -- one crossing per round: the safe zone is the side the already-safe runners are on (their SafeSide);
+    -- nobody safe yet -> the zone farther from you (you start on the other side)
     local zs = findZones()
-    local last = LocalPlayer:GetAttribute("SafeSide")
     local list = {}
-    for k, z in pairs(zs) do list[#list + 1] = z end
+    for _, z in pairs(zs) do list[#list + 1] = z end
     if #list == 0 then return nil end
-    if last then
-        for _, z in ipairs(list) do if z.side and z.side ~= tostring(last):upper() then return z end end
+    local votes = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local sd = plr:GetAttribute("SafeSide")
+        if sd and plr:GetAttribute("RunState") == "Safe" then votes[tostring(sd):upper()] = (votes[tostring(sd):upper()] or 0) + 1 end
     end
-    -- unknown: the zone farther from you
+    local side, n = nil, 0
+    for k, v in pairs(votes) do if v > n then side, n = k, v end end
+    if side then
+        for _, z in ipairs(list) do if z.side == side then return z, "safe runners are on " .. side end end
+    end
     table.sort(list, function(a, b) return (a.part.Position - me.Position).Magnitude > (b.part.Position - me.Position).Magnitude end)
-    return list[1]
+    return list[1], side and ("no zone named " .. side .. ", taking the far one") or "nobody safe yet, taking the far one"
 end
 
 -- don't get kicked for idling
@@ -767,13 +774,13 @@ connect(RunService.Heartbeat, function()
     local dir, what
     if role == "Runner" then
         if LocalPlayer:GetAttribute("RunState") == "Safe" then holdKeys({}) return end
-        local goal = goalFor(me)
+        local goal, why = goalFor(me)
         if not goal then holdKeys({}) return end
         local g = goal.part.Position - me.Position
         dir = Vector3.new(g.X, 0, g.Z)
         if dir.Magnitude < 2 then holdKeys({}) return end
         dir = dir.Unit
-        what = "to safe zone " .. tostring(goal.side or goal.name)
+        what = "to safe zone " .. tostring(goal.side or goal.name) .. " (" .. tostring(why) .. ")"
         -- steer away from catchers in the way
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
