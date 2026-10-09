@@ -727,7 +727,7 @@ local function findZones()
     end
     return zones
 end
--- direction you were facing when the crossing started ("just run straight")
+-- direction you were facing when the crossing started (last resort)
 local straightDir
 connect(LocalPlayer:GetAttributeChangedSignal("RunState"), function()
     if LocalPlayer:GetAttribute("RunState") == "Active" then
@@ -738,25 +738,110 @@ connect(LocalPlayer:GetAttributeChangedSignal("RunState"), function()
         end
     end
 end)
-local function goalFor(me)
-    -- 1. where the already-safe runners are standing: that IS the safe zone
+
+-- where the safe zone was on each map, learned from safe runners and saved between sessions
+local HttpService = game:GetService("HttpService")
+local SAFE_FILE = "king_hub/huss_safezones.json"
+local safeByMap = {}
+pcall(function() if isfile and isfile(SAFE_FILE) then safeByMap = HttpService:JSONDecode(readfile(SAFE_FILE)) end end)
+local function mapKey()
+    local m = activeMap()
+    return m and m:GetFullName() or "?"
+end
+local lastSafeSave = 0
+local function safeRunnersCenter()
     local sum, n = Vector3.zero, 0
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and plr:GetAttribute("RunState") == "Safe" then
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and plr:GetAttribute("RunState") == "Safe" and inMatch(plr) then
             local hrp = rootOf(plr)
             if hrp then sum += hrp.Position; n += 1 end
         end
     end
-    if n > 0 then return sum / n, string.format("toward %d safe runners", n) end
-    -- 2. nobody safe yet: run straight the way you faced when the crossing started
-    if straightDir then return me.Position + straightDir * 60, "straight ahead" end
-    -- 3. a safe zone found by name
-    local far, fd
-    for _, z in pairs(findZones()) do
-        local d = (z.part.Position - me.Position).Magnitude
-        if not fd or d > fd then far, fd = z, d end
+    if n == 0 then return nil, 0 end
+    local c = sum / n
+    local key = mapKey()
+    if os.clock() - lastSafeSave > 5 then
+        lastSafeSave = os.clock()
+        safeByMap[key] = {c.X, c.Y, c.Z}
+        pcall(writefile, SAFE_FILE, HttpService:JSONEncode(safeByMap))
     end
-    if far then return far.part.Position, "named zone " .. tostring(far.side or far.name) end
+    return c, n
+end
+
+-- path following: Roblox pathfinding around the map's curves, recomputed every ~1.5 s
+local PathfindingService = game:GetService("PathfindingService")
+local route = {points = nil, idx = 1, goal = nil, at = 0, computing = false, failed = 0}
+local function computeRoute(from, goal)
+    if route.computing then return end
+    route.computing = true
+    task.spawn(function()
+        local ok = pcall(function()
+            local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 6})
+            path:ComputeAsync(from, goal)
+            if path.Status == Enum.PathStatus.Success then
+                local pts = {}
+                for _, w in ipairs(path:GetWaypoints()) do pts[#pts + 1] = w.Position end
+                route.points, route.idx, route.failed = pts, 1, 0
+            else
+                route.points = nil
+                route.failed += 1
+            end
+        end)
+        if not ok then route.points = nil; route.failed += 1 end
+        route.goal, route.at, route.computing = goal, os.clock(), false
+    end)
+end
+local function followRoute(me, goal)
+    if not route.goal or (route.goal - goal).Magnitude > 8 or os.clock() - route.at > 1.5 then computeRoute(me.Position, goal) end
+    local pts = route.points
+    if not pts then return nil end
+    while route.idx < #pts and (Vector3.new(pts[route.idx].X - me.Position.X, 0, pts[route.idx].Z - me.Position.Z)).Magnitude < 4 do
+        route.idx += 1
+    end
+    local wp = pts[route.idx]
+    return wp and Vector3.new(wp.X - me.Position.X, 0, wp.Z - me.Position.Z)
+end
+
+-- follow the crowd: which way are the other crossing runners heading?
+local crowdPrev = {}
+local function crowdDir(me, dt)
+    local sum, n = Vector3.zero, 0
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and plr:GetAttribute("RunState") == "Active" and inMatch(plr) then
+            local hrp = rootOf(plr)
+            if hrp then
+                local pp = crowdPrev[plr]
+                crowdPrev[plr] = hrp.Position
+                if pp then
+                    local v = Vector3.new(hrp.Position.X - pp.X, 0, hrp.Position.Z - pp.Z) / math.max(dt, 1e-3)
+                    local d = (hrp.Position - me.Position).Magnitude
+                    if v.Magnitude > 6 and d < 80 then
+                        local w = 1 / (1 + d / 20)                     -- runners near you count more (same part of the curve)
+                        sum += v.Unit * w; n += w
+                    end
+                end
+            end
+        end
+    end
+    if n > 0 and sum.Magnitude > 0.1 then return sum.Unit end
+end
+
+local function runnerDir(me, dt)
+    local c, n = safeRunnersCenter()
+    if c then
+        local d = followRoute(me, c)
+        if d then return d, string.format("path to %d safe runners (%d waypoints)", n, route.points and #route.points or 0) end
+        return Vector3.new(c.X - me.Position.X, 0, c.Z - me.Position.Z), "straight to safe runners (no path)"
+    end
+    local known = safeByMap[mapKey()]
+    if known then
+        local g = Vector3.new(known[1], known[2], known[3])
+        local d = followRoute(me, g)
+        if d then return d, "path to this map's remembered safe zone" end
+    end
+    local cd = crowdDir(me, dt)
+    if cd then return cd, "following the other runners" end
+    if straightDir then return straightDir, "straight ahead (no info yet)" end
     return nil
 end
 
@@ -772,7 +857,7 @@ end)
 local stuckFrom, stuckPos, sidestepUntil, sidestepSign = 0, nil, 0, 1
 local lastPlayLog = 0
 local playWasOn = false
-connect(RunService.Heartbeat, function()
+connect(RunService.Heartbeat, function(dt)
     if not Cfg.AutoPlay then
         if playWasOn then playWasOn = false; holdKeys({}) end       -- turned off: let go of the keys
         return
@@ -786,13 +871,10 @@ connect(RunService.Heartbeat, function()
     local dir, what
     if role == "Runner" then
         if LocalPlayer:GetAttribute("RunState") == "Safe" then holdKeys({}) return end
-        local goal, why = goalFor(me)
-        if not goal then holdKeys({}) return end
-        local g = goal - me.Position
-        dir = Vector3.new(g.X, 0, g.Z)
-        if dir.Magnitude < 2 then holdKeys({}) return end
-        dir = dir.Unit
-        what = "running " .. tostring(why)
+        local d0, why = runnerDir(me, dt)
+        if not d0 or d0.Magnitude < 0.5 then holdKeys({}) return end
+        dir = d0.Unit
+        what = tostring(why)
         -- steer away from catchers in the way
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
