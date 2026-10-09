@@ -48,6 +48,7 @@ local Cfg = {
     Esp = true, ShowRunners = true, ShowCatchers = true, Names = true, Distance = true, TackleTimer = true,
     Outline = true, Warning = true, WarnDist = 35, MaxDist = 600,
     AutoDodge = true, DodgeTime = 0.22, DodgeDist = 9, Juke = true, JukeTime = 0.45,
+    AutoCatch = true, CatchRange = 7,
 }
 local connections, cleanups = {}, {}
 local function connect(sig, fn) local c = sig:Connect(fn); connections[#connections + 1] = c; return c end
@@ -427,6 +428,103 @@ connect(RunService.Heartbeat, function(dt)
     end
 end)
 
+-- ---------------------------------------------------------------- auto catch
+-- You're the catcher, your tackle is ready (TackleReadyAt has passed) and a runner who isn't safe is within
+-- CatchRange (or will be in ~0.15 s): the camera turns onto them for a few frames and the tackle input is pressed.
+-- The tackle input is learned like the dash key: the input you pressed right before your TackleReadyAt moved.
+-- Default left click. Catches (leaderstats) is checked afterwards so the log shows hits and misses.
+local TACKLE_FILE = "king_hub/huss_tacklekey.txt"
+local tackleKey
+pcall(function()
+    if isfile and isfile(TACKLE_FILE) then
+        local name = readfile(TACKLE_FILE):gsub("%s", "")
+        if name:sub(1, 6) == "Mouse:" then tackleKey = Enum.UserInputType[name:sub(7)] else tackleKey = Enum.KeyCode[name] end
+    end
+end)
+tackleKey = tackleKey or Enum.UserInputType.MouseButton1
+log("auto catch: tackle input = " .. tackleKey.Name)
+local catching = false
+connect(LocalPlayer:GetAttributeChangedSignal("TackleReadyAt"), function()
+    if catching then return end
+    local now = os.clock()
+    for i = #recentPress, 1, -1 do
+        local r = recentPress[i]
+        if now - r.t < 0.4 then
+            if r.k ~= tackleKey and r.k ~= dashKey then
+                tackleKey = r.k
+                pcall(writefile, TACKLE_FILE, (r.k.EnumType == Enum.KeyCode) and r.k.Name or ("Mouse:" .. r.k.Name))
+                log("auto catch: learned tackle input = " .. r.k.Name)
+            end
+            return
+        end
+    end
+end)
+local function catchesNow()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    local c = ls and ls:FindFirstChild("Catches")
+    return c and tonumber(c.Value) or 0
+end
+local aimAt                       -- Vector3 the camera is turned to while a catch is in progress
+RunService:BindToRenderStep("king_huss_catchaim", Enum.RenderPriority.Camera.Value + 2, function()
+    if not aimAt then return end
+    local cam = Workspace.CurrentCamera
+    if cam then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimAt) end
+end)
+cleanups[#cleanups + 1] = function() pcall(function() RunService:UnbindFromRenderStep("king_huss_catchaim") end) end
+local catches, lastCatch = 0, 0
+local catchPrev = {}
+local function tryCatch(target, hrp, d, how)
+    catching = true
+    lastCatch = os.clock()
+    local before = catchesNow()
+    local tStart = os.clock()
+    -- turn onto them for a few frames, then tackle while still facing them
+    while os.clock() - tStart < 0.08 do
+        aimAt = hrp.Position + Vector3.new(0, 0.5, 0)
+        RunService.RenderStepped:Wait()
+    end
+    pcall(press, tackleKey, true)
+    task.wait(0.04)
+    pcall(press, tackleKey, false)
+    local t2 = os.clock()
+    while os.clock() - t2 < 0.12 do
+        if hrp.Parent then aimAt = hrp.Position + Vector3.new(0, 0.5, 0) end
+        RunService.RenderStepped:Wait()
+    end
+    aimAt = nil
+    catches += 1
+    task.delay(1.2, function()
+        local got = catchesNow() > before
+        log(string.format("auto catch #%d (%s): %s at %.1f studs -> %s", catches, how, target.Name, d, got and "CAUGHT" or "missed"))
+        catching = false
+    end)
+end
+connect(RunService.Heartbeat, function(dt)
+    if not Cfg.AutoCatch or catching or os.clock() - lastCatch < 0.5 then return end
+    if roleOf(LocalPlayer) ~= "Catcher" or not inMatch(LocalPlayer) then return end
+    if (tonumber(LocalPlayer:GetAttribute("TackleReadyAt")) or 0) > serverNow() then return end
+    local me = myRoot()
+    if not me then return end
+    local best, bestHrp, bestD, how
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and inMatch(plr) and plr:GetAttribute("RunState") ~= "Safe" then
+            local hrp = rootOf(plr)
+            if hrp then
+                local pp = catchPrev[plr]
+                catchPrev[plr] = hrp.Position
+                local vel = pp and (hrp.Position - pp) / math.max(dt, 1e-3) or Vector3.zero
+                local d = (hrp.Position - me.Position).Magnitude
+                local soon = (hrp.Position + vel * 0.15 - me.Position).Magnitude
+                local eff = math.min(d, soon)
+                if eff <= Cfg.CatchRange and (not bestD or eff < bestD) then
+                    best, bestHrp, bestD, how = plr, hrp, eff, (soon < d) and "coming in" or "in range"
+                end
+            end
+        end
+    end
+    if best then task.spawn(tryCatch, best, bestHrp, bestD, how) end
+end)
+
 -- ---------------------------------------------------------------- panel
 local gui = Instance.new("ScreenGui")
 gui.Name = "king_huss_menu"
@@ -487,6 +585,7 @@ toggle("Distance", "Distance")
 toggle("Catcher tackle timer", "TackleTimer")
 toggle("Catcher warning + arrow", "Warning")
 toggle("Auto dodge (dash once to teach the key)", "AutoDodge")
+toggle("Auto catch (when you're the catcher)", "AutoCatch")
 order += 1
 local hint = Instance.new("TextLabel")
 hint.LayoutOrder = order
