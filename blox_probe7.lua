@@ -47,17 +47,57 @@ local function hex(b, n)
     return table.concat(t, " ")
 end
 
+-- UserId as the varint bytes the game uses (seen in RemoteSnapshot), to spot a remote naming a hidden player
+local function varintBytes(n)
+    local t = {}
+    repeat
+        local b = n % 128
+        n = math.floor(n / 128)
+        if n > 0 then b += 128 end
+        t[#t + 1] = b
+    until n == 0
+    return t
+end
+local function hasBytes(b, seq)
+    local len, n = buffer.len(b), #seq
+    for i = 0, len - n do
+        if buffer.readu8(b, i) == seq[1] then
+            local ok = true
+            for k = 2, n do if buffer.readu8(b, i + k - 1) ~= seq[k] then ok = false break end end
+            if ok then return true end
+        end
+    end
+    return false
+end
+local idBytes = {}
+local function idOf(plr)
+    local v = idBytes[plr]
+    if not v then v = varintBytes(plr.UserId); idBytes[plr] = v end
+    return v
+end
+local mentionHidden, mentionVisible = {}, {}   -- remote -> times it named a hidden / visible player
+
 local recent = {}                 -- {t, pos, src, off}
 local onVisible, fired = {}, {}   -- src -> times a position landed on a visible enemy / times fired
 local hexSample = {}
 local conns = {}
 local function watch(r)
-    if not WATCH[r.Name] then return end
+    if r.Name == "RemoteSnapshot" then return end
+    local deep = WATCH[r.Name]
     conns[#conns + 1] = r.OnClientEvent:Connect(function(...)
         local src = r.Name
         local now = os.clock()
         for _, a in ipairs({...}) do
-            if typeof(a) == "buffer" then
+            if typeof(a) == "buffer" and buffer.len(a) >= 5 then
+                -- does this message name another player by UserId, and are they hidden right now?
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr ~= lp and hasBytes(a, idOf(plr)) then
+                        if isCulled(plr) then mentionHidden[src] = (mentionHidden[src] or 0) + 1
+                        else mentionVisible[src] = (mentionVisible[src] or 0) + 1 end
+                    end
+                end
+            end
+            if deep and typeof(a) == "buffer" then
                 fired[src] = (fired[src] or 0) + 1
                 if not hexSample[src] then hexSample[src] = string.format("len=%d %s", buffer.len(a), hex(a, 48)) end
                 local list = positions(a)
@@ -139,6 +179,12 @@ table.sort(rows, function(a, b) return a[2] > b[2] end)
 local parts = {}
 for i = 1, math.min(12, #rows) do parts[#parts + 1] = rows[i][1] .. " x" .. rows[i][2] end
 p("positions landing on VISIBLE players (remote@byteOffset): " .. (#parts > 0 and table.concat(parts, " | ") or "none"))
+local mh = {}
+for src, n in pairs(mentionHidden) do mh[#mh + 1] = {src, n} end
+table.sort(mh, function(a, b) return a[2] > b[2] end)
+local mp = {}
+for i = 1, math.min(15, #mh) do mp[#mp + 1] = string.format("%s x%d (visible x%d)", mh[i][1], mh[i][2], mentionVisible[mh[i][1]] or 0) end
+p("remotes naming a HIDDEN player by UserId: " .. (#mp > 0 and table.concat(mp, " | ") or "none"))
 local hp = {}
 for k, n in pairs(hitBySrc) do hp[#hp + 1] = k .. " x" .. n end
 p("matches while hidden: " .. (#hp > 0 and table.concat(hp, ", ") or "none"))
