@@ -4842,8 +4842,15 @@ shared.MH_Try('Box ESP + gun chams', function()
         return ok and v or nil
     end
     -- grenades / bomb / world effects make sounds away from any player: never pin those on someone
-    local SKIP_CLASS = {Flashbang = true, Smoke = true, Molotov = true, Incendiary = true, HE = true, Decoy = true,
-        Grenade = true, Bomb = true, C4 = true, Impact = true, Bullet = true, Explosion = true, Fire = true}
+    -- player-made (kept): FloorSounds (steps, jumps, landings), gun classes (Shoot, Bolt, MagOut...), Other (Toggle Scope),
+    -- team voice lines ("Throwing Flashbang"). Thrower's own "Throw" is kept; Start/Flash/Bounce/Pop happen at the grenade.
+    local SKIP_CLASS = {Flashbang = true, Molotov = true, Incendiary = true, Decoy = true, C4 = true, Bomb = true,
+        Impact = true, Bullet = true, Explosion = true, Fire = true, Grenade = true}
+    local function skipSound(cls, name)
+        if name == "Throw" then return false end
+        if SKIP_CLASS[cls] or cls:find("Grenade") or cls:find("Smoke") or cls:find("Bomb") then return true end
+        return name:find("Bounce") ~= nil or name:find("Explode") ~= nil or name:find("Detonat") ~= nil
+    end
     local classesSeen, classLog = {}, 0
     local function pin(pos, what)
         local now = os.clock()
@@ -4871,11 +4878,15 @@ shared.MH_Try('Box ESP + gun chams', function()
     end
     task.spawn(function()
         local function hook(name, fn)
-            local r = RS:FindFirstChild(name, true)
-            if not r then
-                local t0 = os.clock()
-                repeat task.wait(1); r = RS:FindFirstChild(name, true) until r or os.clock() - t0 > 20
+            -- the game also has non-remote objects with these names, so look for the remote itself
+            local function find()
+                for _, d in ipairs(RS:GetDescendants()) do
+                    if d.Name == name and (d:IsA("RemoteEvent") or d:IsA("UnreliableRemoteEvent")) then return d end
+                end
             end
+            local r = find()
+            local t0 = os.clock()
+            while not r and os.clock() - t0 < 30 do task.wait(2); r = find() end
             if not (r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent"))) then shared.MH_Log("heard ESP: " .. name .. " not found") return end
             KING_KC(r.OnClientEvent, function(b) if typeof(b) == "buffer" then local v = decode(b); if type(v) == "table" then fn(v) end end end)
             shared.MH_Log("heard ESP: listening to " .. name)
@@ -4889,7 +4900,7 @@ shared.MH_Try('Box ESP + gun chams', function()
                 classLog += 1
                 shared.MH_Log("heard ESP: sound class=" .. cls .. " name=" .. tostring(v.Name))
             end
-            if SKIP_CLASS[cls] then return end
+            if skipSound(cls, tostring(v.Name or "")) then return end
             pin(pos, cls == "FloorSounds" and "step" or tostring(v.Name or cls))
         end)
         hook("CreateTracer", function(v)
