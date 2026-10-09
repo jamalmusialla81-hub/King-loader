@@ -47,6 +47,7 @@ pcall(function() if gethui then GuiParent = gethui() end end)
 local Cfg = {
     Esp = true, ShowRunners = true, ShowCatchers = true, Names = true, Distance = true, TackleTimer = true,
     Outline = true, Warning = true, WarnDist = 35, MaxDist = 600,
+    AutoDodge = true, DodgeTime = 0.35, DodgeDist = 14,
 }
 local connections, cleanups = {}, {}
 local function connect(sig, fn) local c = sig:Connect(fn); connections[#connections + 1] = c; return c end
@@ -235,6 +236,137 @@ connect(RunService.RenderStepped, function(dt)
     end
 end)
 
+-- ---------------------------------------------------------------- auto dodge
+-- When a catcher whose tackle is ready will reach you within DodgeTime (or is already inside DodgeDist and
+-- closing), you dash sideways out of their path using the game's own dash, by pressing the real keys:
+-- the movement keys for the dodge direction + the dash key. The dash key is learned: dash once yourself and the
+-- key you pressed just before DashCount went up is remembered (saved to king_hub/huss_dashkey.txt).
+local VIM = game:GetService("VirtualInputManager")
+local DASHKEY_FILE = "king_hub/huss_dashkey.txt"
+local dashKey
+pcall(function()
+    if isfile and isfile(DASHKEY_FILE) then
+        local name = readfile(DASHKEY_FILE):gsub("%s", "")
+        if name:sub(1, 6) == "Mouse:" then dashKey = Enum.UserInputType[name:sub(7)]
+        else dashKey = Enum.KeyCode[name] end
+    end
+end)
+log("auto dodge: dash key = " .. (dashKey and dashKey.Name or "not learned yet (dash once yourself)"))
+local MOVE_KEYS = {[Enum.KeyCode.W] = true, [Enum.KeyCode.A] = true, [Enum.KeyCode.S] = true, [Enum.KeyCode.D] = true}
+local recentPress = {}           -- {input enum, t}
+local dodging = false
+connect(UserInputService.InputBegan, function(i, gp)
+    if dodging then return end
+    local k = (i.UserInputType == Enum.UserInputType.Keyboard) and i.KeyCode or i.UserInputType
+    if k == Enum.UserInputType.MouseMovement or MOVE_KEYS[k] then return end
+    table.insert(recentPress, {k = k, t = os.clock()})
+    if #recentPress > 8 then table.remove(recentPress, 1) end
+end)
+local function watchDash(ch)
+    if not ch then return end
+    connect(ch:GetAttributeChangedSignal("DashCount"), function()
+        if dodging then return end
+        -- the dash you just did yourself: which key was pressed right before it?
+        local now = os.clock()
+        for i = #recentPress, 1, -1 do
+            local r = recentPress[i]
+            if now - r.t < 0.35 then
+                if dashKey ~= r.k then
+                    dashKey = r.k
+                    local save = (r.k.EnumType == Enum.KeyCode) and r.k.Name or ("Mouse:" .. r.k.Name)
+                    pcall(writefile, DASHKEY_FILE, save)
+                    log("auto dodge: learned dash key = " .. r.k.Name)
+                end
+                return
+            end
+        end
+    end)
+end
+watchDash(LocalPlayer.Character)
+connect(LocalPlayer.CharacterAdded, watchDash)
+
+local function press(k, down)
+    if k.EnumType == Enum.KeyCode then
+        VIM:SendKeyEvent(down, k, false, game)
+    else
+        local m = UserInputService:GetMouseLocation()
+        local btn = (k == Enum.UserInputType.MouseButton2) and 1 or 0
+        VIM:SendMouseButtonEvent(m.X, m.Y, btn, down, game, 0)
+    end
+end
+local lastDodge, dodges = 0, 0
+local function dodge(cam, me, cat, catVel, d, tti)
+    if not dashKey then return end
+    dodging = true
+    lastDodge = os.clock()
+    -- sideways from the catcher's path, on the side you're already on
+    local toMe = Vector3.new(me.Position.X - cat.Position.X, 0, me.Position.Z - cat.Position.Z)
+    local path = Vector3.new(catVel.X, 0, catVel.Z)
+    if path.Magnitude < 1 then path = -toMe end
+    local side = Vector3.new(-path.Z, 0, path.X).Unit
+    if side:Dot(toMe) < 0 then side = -side end
+    local dir = (side * 0.85 + (toMe.Magnitude > 0 and toMe.Unit or Vector3.zero) * 0.35).Unit
+    -- turn it into camera-relative WASD
+    local f = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
+    local r = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
+    local fd, rd = dir:Dot(f), dir:Dot(r)
+    local keys = {}
+    if fd > 0.35 then keys[#keys + 1] = Enum.KeyCode.W elseif fd < -0.35 then keys[#keys + 1] = Enum.KeyCode.S end
+    if rd > 0.35 then keys[#keys + 1] = Enum.KeyCode.D elseif rd < -0.35 then keys[#keys + 1] = Enum.KeyCode.A end
+    local held = {}
+    for _, k in ipairs(keys) do
+        held[k] = UserInputService:IsKeyDown(k)
+        if not held[k] then pcall(press, k, true) end
+    end
+    task.wait(0.03)
+    pcall(press, dashKey, true)
+    task.wait(0.05)
+    pcall(press, dashKey, false)
+    dodges += 1
+    log(string.format("auto dodge #%d: catcher %.1f studs away, contact in %.2fs, dodge keys %s + %s",
+        dodges, d, tti, (function() local n = {} for _, k in ipairs(keys) do n[#n + 1] = k.Name end return table.concat(n, "") end)(), dashKey.Name))
+    task.delay(0.3, function()
+        for _, k in ipairs(keys) do if not held[k] then pcall(press, k, false) end end
+        dodging = false
+    end)
+end
+
+local prevPos = {}
+local lastNoKeyLog = 0
+connect(RunService.Heartbeat, function(dt)
+    if not Cfg.AutoDodge or dodging or os.clock() - lastDodge < 0.6 then return end
+    if roleOf(LocalPlayer) ~= "Runner" or not inMatch(LocalPlayer) then return end
+    local ch = LocalPlayer.Character
+    local me = ch and ch:FindFirstChild("HumanoidRootPart")
+    local cam = Workspace.CurrentCamera
+    if not (me and cam) or ch:GetAttribute("DashReady") == false then return end
+    local now = serverNow()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
+            local cat = rootOf(plr)
+            if cat then
+                local pp = prevPos[plr]
+                prevPos[plr] = cat.Position
+                local vel = pp and (cat.Position - pp) / math.max(dt, 1e-3) or Vector3.zero
+                local rel = Vector3.new(me.Position.X - cat.Position.X, 0, me.Position.Z - cat.Position.Z)
+                local d = rel.Magnitude
+                local closing = d > 0 and vel:Dot(rel.Unit) or 0
+                local tti = closing > 1 and d / closing or math.huge
+                local ready = (tonumber(plr:GetAttribute("TackleReadyAt")) or 0) <= now
+                if ready and d < 40 and (tti < Cfg.DodgeTime or (d < Cfg.DodgeDist and closing > 4)) then
+                    if dashKey then
+                        task.spawn(dodge, cam, me, cat, vel, d, tti)
+                        return
+                    elseif os.clock() - lastNoKeyLog > 5 then
+                        lastNoKeyLog = os.clock()
+                        log("auto dodge: catcher close but dash key not learned yet - dash once yourself")
+                    end
+                end
+            end
+        end
+    end
+end)
+
 -- ---------------------------------------------------------------- panel
 local gui = Instance.new("ScreenGui")
 gui.Name = "king_huss_menu"
@@ -294,6 +426,7 @@ toggle("Names", "Names")
 toggle("Distance", "Distance")
 toggle("Catcher tackle timer", "TackleTimer")
 toggle("Catcher warning + arrow", "Warning")
+toggle("Auto dodge (dash once to teach the key)", "AutoDodge")
 order += 1
 local hint = Instance.new("TextLabel")
 hint.LayoutOrder = order
