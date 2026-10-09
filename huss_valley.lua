@@ -490,6 +490,7 @@ end)
 cleanups[#cleanups + 1] = function() pcall(function() RunService:UnbindFromRenderStep("king_huss_catchaim") end) end
 local catches, lastCatch = 0, 0
 local catchPrev = {}
+local catchVel = {}              -- smoothed runner velocity
 local function tryCatch(target, hrp, d, how)
     catching = true
     lastCatch = os.clock()
@@ -559,6 +560,7 @@ connect(RunService.Heartbeat, function(dt)
                 local pp = catchPrev[plr]
                 catchPrev[plr] = hrp.Position
                 local vel = pp and (hrp.Position - pp) / math.max(dt, 1e-3) or Vector3.zero
+                catchVel[plr] = catchVel[plr] and catchVel[plr]:Lerp(vel, 0.4) or vel
                 local d = (hrp.Position - me.Position).Magnitude
                 local soon = (hrp.Position + vel * 0.15 - me.Position).Magnitude
                 local eff = math.min(d, soon)
@@ -580,9 +582,8 @@ connect(RunService.Heartbeat, function(dt)
             if hrp then
                 local d = (hrp.Position - me.Position).Magnitude
                 if d >= Cfg.LeapMin and d <= Cfg.LeapMax and (not ld or d < ld) then
-                    local pp = catchPrev[plr]
                     lt, lh, ld = plr, hrp, d
-                    lv = pp and (hrp.Position - pp) / math.max(dt, 1e-3) or Vector3.zero
+                    lv = catchVel[plr] or Vector3.zero
                 end
             end
         end
