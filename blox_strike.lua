@@ -899,6 +899,9 @@ local Features = {
     TriggerbotRange   = 300,
     TriggerHeadOnly   = false,
     TriggerHeard      = true,      -- also fire at hidden enemies where they were just heard (through walls)
+    Silent            = true,      -- silent aim: bullets that you fire land on the target's head
+    SilentFov         = 140,       -- screen pixels around the crosshair
+    SilentWallCheck   = true,      -- only targets you have a clear line to
     LastShotAt        = 0,
 
     RedWhenSighted    = true,
@@ -2588,6 +2591,8 @@ toggle(COMBAT_TAB, "Big Heads (visual only - does not change real hits)", false,
 toggle(COMBAT_TAB, "Enable Triggerbot", true, function(v) setTriggerbot(v) end)
 toggle(COMBAT_TAB, "Triggerbot: head only", false, function(v) Features.TriggerHeadOnly = v end)
 toggle(COMBAT_TAB, "Triggerbot: shoot heard enemies through walls", true, function(v) Features.TriggerHeard = v end)
+toggle(COMBAT_TAB, "Silent aim (shots you fire hit the head)", true, function(v) Features.Silent = v end)
+toggle(COMBAT_TAB, "Silent aim: wall check", true, function(v) Features.SilentWallCheck = v end)
 setTriggerbot(true) -- always on at startup
 
 Features.TriggerbotDelay = 0
@@ -5156,6 +5161,133 @@ KING_KC(UserInputService.InputBegan, function(i, g)
 end)
 
 SelectTab(tabButtons["Visuals"], tabPages["Visuals"], "Visuals", "👁")
+
+-- =============================================================================
+--  SILENT AIM
+--  The game's bullet class (a table with _performRaycast and getTrueSpread) works out where each shot lands on
+--  your side. Its result is {Origin, Direction, Distance, Hits = {{Instance, Position, Exit...}, ...}}. When an
+--  enemy head is inside the silent-aim circle, the last hit is rewritten to that head, so the shot lands there
+--  without moving your camera. Needs getgc + hookfunction.
+-- =============================================================================
+shared.MH_Try('Silent aim', function()
+    local silentParams = RaycastParams.new()
+    silentParams.FilterType = Enum.RaycastFilterType.Exclude
+    silentParams.IgnoreWater = true
+    local function clearTo(head)
+        local cam = workspace.CurrentCamera
+        local me = LocalPlayer.Character
+        silentParams.FilterDescendantsInstances = me and {me} or {}
+        local origin = cam.CFrame.Position
+        local r = workspace:Raycast(origin, head.Position - origin, silentParams)
+        return not r or (r.Instance and r.Instance:IsDescendantOf(head.Parent))
+    end
+    local function pickTarget()
+        local cam = workspace.CurrentCamera
+        if not cam then return nil end
+        local c = getCrosshairPosition() or cam.ViewportSize / 2
+        local best, bestD
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and IsAlive(plr) and not IsTeammate(plr) then
+                local ch = plr.Character
+                -- hidden (culled) players are parked outside the world: the server would never accept a hit on them
+                if ch and ch.Parent and ch.Parent.Name ~= "_PVS_CulledCharacters" and not ch:GetAttribute("Invincible") then
+                    local head = ch:FindFirstChild("Head")
+                    if head then
+                        local sp, on = cam:WorldToViewportPoint(head.Position)
+                        if on and sp.Z > 0 then
+                            local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+                            if d <= Features.SilentFov and (not bestD or d < bestD) and (not Features.SilentWallCheck or clearTo(head)) then
+                                best, bestD = head, d
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best, bestD
+    end
+
+    task.spawn(function()
+        if not (getgc and hookfunction) then
+            shared.MH_Log(string.format("silent aim: not available (getgc=%s hookfunction=%s)", tostring(getgc ~= nil), tostring(hookfunction ~= nil)))
+            return
+        end
+        local bulletClass
+        for _ = 1, 60 do
+            for _, obj in ipairs(getgc(true)) do
+                if type(obj) == "table" and type(rawget(obj, "_performRaycast")) == "function" and rawget(obj, "getTrueSpread") ~= nil then
+                    bulletClass = obj
+                    break
+                end
+            end
+            if bulletClass then break end
+            task.wait(1)
+        end
+        if not bulletClass then shared.MH_Log("silent aim: bullet class (_performRaycast) not found - the game's gun code may be in an actor") return end
+        local shots, redirected, firstLogged = 0, 0, false
+        local old
+        old = hookfunction(bulletClass._performRaycast, function(...)
+            local rets = table.pack(old(...))
+            local result = rets[1]
+            if type(result) == "table" then
+                shots += 1
+                local ok, err = pcall(function()
+                    if not firstLogged then
+                        firstLogged = true
+                        local keys = {}
+                        for k, v in pairs(result) do keys[#keys + 1] = tostring(k) .. ":" .. typeof(v) end
+                        local hits = rawget(result, "Hits")
+                        local hk = {}
+                        if type(hits) == "table" and type(hits[1]) == "table" then
+                            for k, v in pairs(hits[1]) do hk[#hk + 1] = tostring(k) .. ":" .. typeof(v) end
+                        end
+                        shared.MH_Log("silent aim: first shot result {" .. table.concat(keys, ", ") .. "} hit[1] {" .. table.concat(hk, ", ") .. "}")
+                    end
+                    if not Features.Silent then return end
+                    local head, d = pickTarget()
+                    if not head then return end
+                    local hits = rawget(result, "Hits")
+                    if type(hits) ~= "table" then return end
+                    local lastIndex
+                    for i, h in pairs(hits) do
+                        if type(h) == "table" and type(i) == "number" and (not lastIndex or i > lastIndex) then lastIndex = i end
+                    end
+                    local final = lastIndex and hits[lastIndex]
+                    if type(final) ~= "table" then return end
+                    local was = final.Instance
+                    final.Instance = head
+                    final.Position = head.Position
+                    if final.Exit ~= nil then final.Exit = false end
+                    local origin = rawget(result, "Origin")
+                    if typeof(origin) == "Vector3" then
+                        local delta = head.Position - origin
+                        local len = delta.Magnitude
+                        if len > 0.001 then
+                            result.Distance = len
+                            result.Direction = delta.Unit
+                            -- earlier hits past the head (wall exits etc.) would look impossible: pull them in
+                            for i, h in pairs(hits) do
+                                if i ~= lastIndex and type(h) == "table" and typeof(h.Position) == "Vector3" and (h.Position - origin):Dot(delta.Unit) > len then
+                                    h.Position = origin + delta.Unit * (len * 0.5)
+                                end
+                            end
+                        end
+                    end
+                    redirected += 1
+                    if redirected <= 30 or redirected % 20 == 0 then
+                        local plr = getPlayerFromPart(head)
+                        shared.MH_Log(string.format("silent aim: shot %d -> %s head (%.0fpx from crosshair, %.0f studs), would have hit %s, %d hits in result",
+                            shots, plr and plr.Name or "?", d, typeof(origin) == "Vector3" and (head.Position - origin).Magnitude or -1,
+                            was and was:GetFullName() or "nothing", #hits))
+                    end
+                end)
+                if not ok then shared.MH_Log("silent aim: error " .. tostring(err)) end
+            end
+            return table.unpack(rets, 1, rets.n)
+        end)
+        shared.MH_Log("silent aim: hooked the bullet class")
+    end)
+end)
 
 -- =============================================================================
 --  DEBUG LOG: everything the ESP / triggerbot / players are doing, every 2 s, into king_hub/hub_log.txt
