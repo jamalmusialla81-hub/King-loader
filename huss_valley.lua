@@ -49,6 +49,7 @@ local Cfg = {
     Outline = true, Warning = true, WarnDist = 35, MaxDist = 600,
     AutoDodge = true, DodgeTime = 0.22, DodgeDist = 9, Juke = true, JukeTime = 0.45,
     AutoCatch = true, CatchRange = 7,
+    AutoAbility = true, AbilityDist = 12,
 }
 local connections, cleanups = {}, {}
 local function connect(sig, fn) local c = sig:Connect(fn); connections[#connections + 1] = c; return c end
@@ -369,6 +370,7 @@ local function dodge(cam, me, cat, catVel, d, tti, why)
     log(line)
     holdKeys({})
     dodging = false
+    if Cfg.AutoAbility and shared.KING_HussPop then task.spawn(shared.KING_HussPop, "combo after dodge") end
 end
 
 local prevPos = {}
@@ -525,6 +527,110 @@ connect(RunService.Heartbeat, function(dt)
     if best then task.spawn(tryCatch, best, bestHrp, bestD, how) end
 end)
 
+-- ---------------------------------------------------------------- auto ability
+-- Your knife's ability (ghost, clone, ...) as an escape: fired when a catcher with a ready tackle is within
+-- AbilityDist and your dash can't save you (not ready), or right after an auto dodge as a combo.
+-- Ability key: read from the game's own ability button text, else learned from your own use (the input you pressed
+-- right before an *AbilityReadyAt went up), else E. Saved to king_hub/huss_abilitykey.txt.
+local ABILITY_FILE = "king_hub/huss_abilitykey.txt"
+local ABILITY_ATTRS = {"AbilityReadyAt", "GhostAbilityReadyAt", "CloneAbilityReadyAt"}
+local abilityKey
+pcall(function()
+    if isfile and isfile(ABILITY_FILE) then
+        local name = readfile(ABILITY_FILE):gsub("%s", "")
+        if name:sub(1, 6) == "Mouse:" then abilityKey = Enum.UserInputType[name:sub(7)] else abilityKey = Enum.KeyCode[name] end
+    end
+end)
+if not abilityKey then
+    -- the ability button usually shows its key (a single letter)
+    pcall(function()
+        for _, gname in ipairs({"AbilityControls", "KnifeAbilityHUD", "GhostAbilityHUD"}) do
+            local g = LocalPlayer.PlayerGui:FindFirstChild(gname)
+            if g then
+                for _, d in ipairs(g:GetDescendants()) do
+                    if d:IsA("TextLabel") or d:IsA("TextButton") then
+                        local t = (d.Text or ""):gsub("%s", ""):upper()
+                        if #t == 1 and Enum.KeyCode[t] and not MOVE_KEYS[Enum.KeyCode[t]] then
+                            abilityKey = Enum.KeyCode[t]
+                            log("auto ability: key read from " .. d:GetFullName())
+                            return
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+abilityKey = abilityKey or Enum.KeyCode.E
+log("auto ability: key = " .. abilityKey.Name)
+local popping = false
+for _, a in ipairs(ABILITY_ATTRS) do
+    connect(LocalPlayer:GetAttributeChangedSignal(a), function()
+        if popping then return end
+        local v = tonumber(LocalPlayer:GetAttribute(a)) or 0
+        if v <= serverNow() then return end            -- only when a cooldown starts
+        local now = os.clock()
+        for i = #recentPress, 1, -1 do
+            local r = recentPress[i]
+            if now - r.t < 0.4 then
+                if r.k ~= abilityKey and r.k ~= dashKey and r.k ~= tackleKey then
+                    abilityKey = r.k
+                    pcall(writefile, ABILITY_FILE, (r.k.EnumType == Enum.KeyCode) and r.k.Name or ("Mouse:" .. r.k.Name))
+                    log("auto ability: learned key = " .. r.k.Name .. " (from " .. a .. ")")
+                end
+                return
+            end
+        end
+    end)
+end
+local function abilityReady()
+    local now = serverNow()
+    local any = false
+    for _, a in ipairs(ABILITY_ATTRS) do
+        local v = LocalPlayer:GetAttribute(a)
+        if v ~= nil then
+            any = true
+            if (tonumber(v) or 0) > now then return false end
+        end
+    end
+    return any
+end
+local pops, lastPop = 0, 0
+local function pop(why)
+    if popping or os.clock() - lastPop < 1 or not abilityReady() then return end
+    popping = true
+    lastPop = os.clock()
+    pcall(press, abilityKey, true)
+    task.wait(0.05)
+    pcall(press, abilityKey, false)
+    pops += 1
+    task.delay(0.6, function()
+        local used = not abilityReady()
+        log(string.format("auto ability #%d (%s): pressed %s -> %s", pops, why, abilityKey.Name, used and "ability used" or "nothing happened (wrong key or no ability?)"))
+        popping = false
+    end)
+end
+shared.KING_HussPop = pop
+connect(RunService.Heartbeat, function()
+    if not Cfg.AutoAbility or popping or os.clock() - lastPop < 1 then return end
+    if roleOf(LocalPlayer) ~= "Runner" or not inMatch(LocalPlayer) or not abilityReady() then return end
+    local ch = LocalPlayer.Character
+    local me = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not me then return end
+    local dashUp = ch:GetAttribute("DashReady") ~= false and Cfg.AutoDodge
+    if dashUp then return end                              -- the dodge handles it; the combo is fired from there
+    local now = serverNow()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
+            local cat = rootOf(plr)
+            if cat and (cat.Position - me.Position).Magnitude < Cfg.AbilityDist and (tonumber(plr:GetAttribute("TackleReadyAt")) or 0) <= now then
+                task.spawn(pop, "catcher close, no dash")
+                return
+            end
+        end
+    end
+end)
+
 -- ---------------------------------------------------------------- panel
 local gui = Instance.new("ScreenGui")
 gui.Name = "king_huss_menu"
@@ -586,6 +692,7 @@ toggle("Catcher tackle timer", "TackleTimer")
 toggle("Catcher warning + arrow", "Warning")
 toggle("Auto dodge (dash once to teach the key)", "AutoDodge")
 toggle("Auto catch (when you're the catcher)", "AutoCatch")
+toggle("Auto ability (escape / after dodge)", "AutoAbility")
 order += 1
 local hint = Instance.new("TextLabel")
 hint.LayoutOrder = order
