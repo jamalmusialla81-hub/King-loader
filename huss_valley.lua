@@ -727,25 +727,37 @@ local function findZones()
     end
     return zones
 end
+-- direction you were facing when the crossing started ("just run straight")
+local straightDir
+connect(LocalPlayer:GetAttributeChangedSignal("RunState"), function()
+    if LocalPlayer:GetAttribute("RunState") == "Active" then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local f = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+            if f.Magnitude > 0.1 then straightDir = f.Unit end
+        end
+    end
+end)
 local function goalFor(me)
-    -- one crossing per round: the safe zone is the side the already-safe runners are on (their SafeSide);
-    -- nobody safe yet -> the zone farther from you (you start on the other side)
-    local zs = findZones()
-    local list = {}
-    for _, z in pairs(zs) do list[#list + 1] = z end
-    if #list == 0 then return nil end
-    local votes = {}
+    -- 1. where the already-safe runners are standing: that IS the safe zone
+    local sum, n = Vector3.zero, 0
     for _, plr in ipairs(Players:GetPlayers()) do
-        local sd = plr:GetAttribute("SafeSide")
-        if sd and plr:GetAttribute("RunState") == "Safe" then votes[tostring(sd):upper()] = (votes[tostring(sd):upper()] or 0) + 1 end
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and plr:GetAttribute("RunState") == "Safe" then
+            local hrp = rootOf(plr)
+            if hrp then sum += hrp.Position; n += 1 end
+        end
     end
-    local side, n = nil, 0
-    for k, v in pairs(votes) do if v > n then side, n = k, v end end
-    if side then
-        for _, z in ipairs(list) do if z.side == side then return z, "safe runners are on " .. side end end
+    if n > 0 then return sum / n, string.format("toward %d safe runners", n) end
+    -- 2. nobody safe yet: run straight the way you faced when the crossing started
+    if straightDir then return me.Position + straightDir * 60, "straight ahead" end
+    -- 3. a safe zone found by name
+    local far, fd
+    for _, z in pairs(findZones()) do
+        local d = (z.part.Position - me.Position).Magnitude
+        if not fd or d > fd then far, fd = z, d end
     end
-    table.sort(list, function(a, b) return (a.part.Position - me.Position).Magnitude > (b.part.Position - me.Position).Magnitude end)
-    return list[1], side and ("no zone named " .. side .. ", taking the far one") or "nobody safe yet, taking the far one"
+    if far then return far.part.Position, "named zone " .. tostring(far.side or far.name) end
+    return nil
 end
 
 -- don't get kicked for idling
@@ -776,11 +788,11 @@ connect(RunService.Heartbeat, function()
         if LocalPlayer:GetAttribute("RunState") == "Safe" then holdKeys({}) return end
         local goal, why = goalFor(me)
         if not goal then holdKeys({}) return end
-        local g = goal.part.Position - me.Position
+        local g = goal - me.Position
         dir = Vector3.new(g.X, 0, g.Z)
         if dir.Magnitude < 2 then holdKeys({}) return end
         dir = dir.Unit
-        what = "to safe zone " .. tostring(goal.side or goal.name) .. " (" .. tostring(why) .. ")"
+        what = "running " .. tostring(why)
         -- steer away from catchers in the way
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
