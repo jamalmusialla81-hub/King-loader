@@ -251,7 +251,8 @@ pcall(function()
         else dashKey = Enum.KeyCode[name] end
     end
 end)
-log("auto dodge: dash key = " .. (dashKey and dashKey.Name or "not learned yet (dash once yourself)"))
+dashKey = dashKey or Enum.KeyCode.Space          -- Space dashes by default; a different key you dash with is learned
+log("auto dodge: dash key = " .. dashKey.Name)
 local MOVE_KEYS = {[Enum.KeyCode.W] = true, [Enum.KeyCode.A] = true, [Enum.KeyCode.S] = true, [Enum.KeyCode.D] = true}
 local recentPress = {}           -- {input enum, t}
 local dodging = false
