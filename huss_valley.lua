@@ -50,6 +50,7 @@ local Cfg = {
     AutoDodge = true, DodgeTime = 0.22, DodgeDist = 9, Juke = true, JukeTime = 0.45,
     AutoCatch = true, CatchRange = 7, AutoLeap = true, LeapMin = 8, LeapMax = 18,
     AutoAbility = true, AbilityDist = 12,
+    AutoPlay = false, AvoidDist = 22,
 }
 local connections, cleanups = {}, {}
 local function connect(sig, fn) local c = sig:Connect(fn); connections[#connections + 1] = c; return c end
@@ -674,6 +675,156 @@ connect(RunService.Heartbeat, function()
     end
 end)
 
+-- ---------------------------------------------------------------- AFK autoplay
+-- Runner: while safe, wait. While crossing (RunState = Active), head for the other side's safe zone (SafeSide is the
+-- side you were last safe on; with no SafeSide yet, the zone farther from you), steering away from catchers.
+-- Catcher: chase the nearest runner that isn't safe; auto leap / auto catch do the catching.
+-- Moves with the real movement keys (camera-relative WASD). Pauses while a dodge / catch / leap is running.
+-- Safe zones are found by name in the active map; what was found is logged so it can be corrected.
+local function activeMap()
+    local ok, m = pcall(function()
+        local v = game:GetService("ReplicatedStorage").ChickenOrHero.Game.ActiveMap
+        return v.Value
+    end)
+    if ok and m then return m end
+    for _, c in ipairs(Workspace:GetChildren()) do
+        if c:IsA("Folder") and c.Name:match("^Map%d") then return c end
+    end
+end
+local zones, zonesMap, zonesAt = {}, nil, 0
+local function findZones()
+    local map = activeMap()
+    if map == zonesMap and os.clock() - zonesAt < 20 then return zones end
+    zonesMap, zonesAt = map, os.clock()
+    zones = {}
+    if not map then return zones end
+    local found = {}
+    for _, d in ipairs(map:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local n = d.Name:lower()
+            local pn = (d.Parent and d.Parent.Name or ""):lower()
+            if n:find("safe") or n:find("goal") or n:find("finish") or pn:find("safe") or pn:find("goal") or pn:find("finish") then
+                local full = (pn .. "/" .. n)
+                local side = full:match("safe[%s_]*zone[%s_]*([ab])") or full:match("safe[%s_]*([ab])%f[%A]") or full:match("side[%s_]*([ab])")
+                    or full:match("([ab])[%s_]*safe") or full:match("goal[%s_]*([ab])") or full:match("finish[%s_]*([ab])")
+                found[#found + 1] = {part = d, side = side and side:upper(), name = d:GetFullName()}
+            end
+        end
+    end
+    -- keep the biggest part per side
+    for _, f in ipairs(found) do
+        local key = f.side or f.name
+        local cur = zones[key]
+        if not cur or f.part.Size.Magnitude > cur.part.Size.Magnitude then zones[key] = f end
+    end
+    local names = {}
+    for k, z in pairs(zones) do names[#names + 1] = k .. "=" .. z.name end
+    log("autoplay: map " .. map:GetFullName() .. " safe-zone candidates: " .. (#names > 0 and table.concat(names, " | ") or "none found"))
+    if #names == 0 then
+        local top = {}
+        for _, c in ipairs(map:GetChildren()) do top[#top + 1] = c.Name end
+        log("autoplay: map top level: " .. table.concat(top, ", "))
+    end
+    return zones
+end
+local function goalFor(me)
+    local zs = findZones()
+    local last = LocalPlayer:GetAttribute("SafeSide")
+    local list = {}
+    for k, z in pairs(zs) do list[#list + 1] = z end
+    if #list == 0 then return nil end
+    if last then
+        for _, z in ipairs(list) do if z.side and z.side ~= tostring(last):upper() then return z end end
+    end
+    -- unknown: the zone farther from you
+    table.sort(list, function(a, b) return (a.part.Position - me.Position).Magnitude > (b.part.Position - me.Position).Magnitude end)
+    return list[1]
+end
+
+-- don't get kicked for idling
+pcall(function()
+    local vu = game:GetService("VirtualUser")
+    connect(LocalPlayer.Idled, function()
+        if not Cfg.AutoPlay then return end
+        vu:CaptureController(); vu:ClickButton2(Vector2.new())
+    end)
+end)
+
+local stuckFrom, stuckPos, sidestepUntil, sidestepSign = 0, nil, 0, 1
+local lastPlayLog = 0
+local playWasOn = false
+connect(RunService.Heartbeat, function()
+    if not Cfg.AutoPlay then
+        if playWasOn then playWasOn = false; holdKeys({}) end       -- turned off: let go of the keys
+        return
+    end
+    playWasOn = true
+    if dodging or catching or popping then return end
+    local cam = Workspace.CurrentCamera
+    local me = myRoot()
+    if not (cam and me) or not inMatch(LocalPlayer) then holdKeys({}) return end
+    local role = roleOf(LocalPlayer)
+    local dir, what
+    if role == "Runner" then
+        if LocalPlayer:GetAttribute("RunState") == "Safe" then holdKeys({}) return end
+        local goal = goalFor(me)
+        if not goal then holdKeys({}) return end
+        local g = goal.part.Position - me.Position
+        dir = Vector3.new(g.X, 0, g.Z)
+        if dir.Magnitude < 2 then holdKeys({}) return end
+        dir = dir.Unit
+        what = "to safe zone " .. tostring(goal.side or goal.name)
+        -- steer away from catchers in the way
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and roleOf(plr) == "Catcher" and inMatch(plr) then
+                local cat = rootOf(plr)
+                if cat then
+                    local away = Vector3.new(me.Position.X - cat.Position.X, 0, me.Position.Z - cat.Position.Z)
+                    local d = away.Magnitude
+                    if d < Cfg.AvoidDist and d > 0 then dir += away.Unit * (1 - d / Cfg.AvoidDist) * 1.6 end
+                end
+            end
+        end
+    elseif role == "Catcher" then
+        local best, bestD
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and roleOf(plr) == "Runner" and inMatch(plr) and plr:GetAttribute("RunState") ~= "Safe" then
+                local hrp = rootOf(plr)
+                if hrp then
+                    local d = (hrp.Position - me.Position).Magnitude
+                    if not bestD or d < bestD then best, bestD = plr, d end
+                end
+            end
+        end
+        if not best then holdKeys({}) return end
+        local hrp = rootOf(best)
+        local v = (catchVel and catchVel[best]) or Vector3.zero
+        local aim = hrp.Position + v * math.clamp(bestD / 30, 0, 0.6)
+        dir = Vector3.new(aim.X - me.Position.X, 0, aim.Z - me.Position.Z)
+        if dir.Magnitude < 0.5 then holdKeys({}) return end
+        what = string.format("chasing %s (%.0f studs)", best.Name, bestD)
+    else
+        holdKeys({})
+        return
+    end
+    dir = dir.Unit
+    -- stuck? sidestep for a moment
+    local now = os.clock()
+    if not stuckPos or (me.Position - stuckPos).Magnitude > 2 then stuckPos, stuckFrom = me.Position, now
+    elseif now - stuckFrom > 1.5 then
+        sidestepUntil, sidestepSign = now + 0.7, -sidestepSign
+        stuckPos, stuckFrom = me.Position, now
+        log("autoplay: stuck, sidestepping")
+    end
+    if now < sidestepUntil then dir = (dir + Vector3.new(-dir.Z, 0, dir.X) * 1.5 * sidestepSign).Unit end
+    holdKeys(keysFor(cam, dir))
+    if now - lastPlayLog > 4 then
+        lastPlayLog = now
+        log("autoplay: " .. role .. " " .. what)
+    end
+end)
+cleanups[#cleanups + 1] = function() holdKeys({}) end
+
 -- ---------------------------------------------------------------- panel
 local gui = Instance.new("ScreenGui")
 gui.Name = "king_huss_menu"
@@ -737,6 +888,7 @@ toggle("Auto dodge (dash once to teach the key)", "AutoDodge")
 toggle("Auto catch (when you're the catcher)", "AutoCatch")
 toggle("Auto leap at runners (Space, catcher)", "AutoLeap")
 toggle("Auto ability (escape / after dodge)", "AutoAbility")
+toggle("AFK autoplay (run to safety / chase runners)", "AutoPlay")
 order += 1
 local hint = Instance.new("TextLabel")
 hint.LayoutOrder = order
