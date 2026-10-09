@@ -20,6 +20,9 @@ local GAMES = {
         return workspace:FindFirstChild("Viewmodels") ~= nil
             or (RS:FindFirstChild("Modules") ~= nil and RS.Modules:FindFirstChild("Items") ~= nil)
     end},
+    {name = "Huss Valley", path = "huss_valley.lua", detect = function()
+        return game.PlaceId == 107535308163741 or RS:FindFirstChild("ChickenOrHero") ~= nil
+    end},
     {name = "Soccer", path = "soccer.lua", detect = function()
         return game.PlaceId == 126987974021910
             or (RS:FindFirstChild("Modules") ~= nil and RS.Modules:FindFirstChild("Ball") ~= nil and RS.Modules:FindFirstChild("Actions") ~= nil)

@@ -60,6 +60,14 @@ local GAMES = {
         end,
     },
     {
+        name = "HUSS VALLEY", icon = "🐔", tag = "Runners vs catchers",
+        url = BASE .. "huss_valley.lua",
+        features = {"Role ESP through walls", "Catcher tackle timers", "Catcher warning + arrow", "Display only"},
+        detect = function()
+            return game.PlaceId == 107535308163741 or RS:FindFirstChild("ChickenOrHero") ~= nil
+        end,
+    },
+    {
         name = "MY SCRIPTS", icon = "📁", tag = "Your own scripts", library = true,
         features = {"MonkeHub, one click", "Extra scripts by URL", "Click an entry to run it", "Add your own below"},
         detect = function() return false end,
