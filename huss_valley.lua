@@ -345,27 +345,42 @@ local function dodge(cam, me, cat, catVel, d, tti, why)
     local clearA, clearB = clearance(from, sideA, 10), clearance(from, sideB, 10)
     local side = sideA
     if clearA < 5 and clearB > clearA then side = sideB end
-    local dashDir = (side * 0.9 + path * 0.15).Unit                -- slightly with their run: they can't turn into it
+    -- straight sideways, a little AWAY from them (never along their run: that's where the tackle lands)
+    local away = toMe.Magnitude > 0 and toMe.Unit or side
+    local dashDir = (side * 0.85 + away * 0.3).Unit
     local dashKeys = keysFor(cam, dashDir)
     holdKeys(dashKeys)
-    task.wait(0.03)
+    task.wait(0.09)                                                 -- let the body turn to the new direction first
     pcall(press, dashKey, true)
     task.wait(0.05)
     pcall(press, dashKey, false)
     dodges += 1
     local line = string.format("auto dodge #%d (%s): catcher %.1f studs, contact in %.2fs, side clear %.0f/%.0f studs, dash %s+%s",
         dodges, why, d, tti, clearA, clearB, keyNames(dashKeys), dashKey.Name)
+    task.wait(0.2)
+    -- where did the dash actually take you? (tuning data)
+    local after = me.Position
+    local moved = Vector3.new(after.X - from.X, 0, after.Z - from.Z)
+    local angle = moved.Magnitude > 0.5 and math.deg(math.acos(math.clamp(moved.Unit:Dot(dashDir), -1, 1))) or -1
+    line ..= string.format(" | moved %.1f studs, %.0f deg off the planned direction, catcher now %.1f studs",
+        moved.Magnitude, angle, (cat.Position - after).Magnitude)
     if Cfg.Juke then
-        -- cut back behind them: they're still carrying their speed the other way
-        task.wait(0.18)
-        local back = (-path * 0.8 + side * 0.35).Unit
-        if clearance(from, back, 8) < 3 then back = side end
-        local jukeKeys = keysFor(cam, back)
+        -- cut back only once they've gone PAST you (their momentum carries them away); until then keep moving away
+        local catNow = Vector3.new(cat.Position.X - after.X, 0, cat.Position.Z - after.Z)
+        local passed = catNow:Dot(path) > 1
+        local nextDir
+        if passed then
+            nextDir = -path                                         -- they overshot: go the way they came from
+            line ..= ", they overshot -> cut back"
+        else
+            nextDir = (side * 0.6 + (catNow.Magnitude > 0 and -catNow.Unit or side) * 0.6).Unit   -- still coming: keep away
+            line ..= ", still coming -> keep away"
+        end
+        if clearance(after, nextDir, 8) < 3 then nextDir = side end
+        local jukeKeys = keysFor(cam, nextDir)
         holdKeys(jukeKeys)
-        line ..= ", juke " .. keyNames(jukeKeys)
+        line ..= " " .. keyNames(jukeKeys)
         task.wait(Cfg.JukeTime)
-    else
-        task.wait(0.25)
     end
     log(line)
     holdKeys({})
