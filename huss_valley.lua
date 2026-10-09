@@ -826,24 +826,58 @@ local function crowdDir(me, dt)
     if n > 0 and sum.Magnitude > 0.1 then return sum.Unit end
 end
 
-local function runnerDir(me, dt)
-    local c, n = safeRunnersCenter()
-    if c then
-        local d = followRoute(me, c)
-        if d then return d, string.format("path to %d safe runners (%d waypoints)", n, route.points and #route.points or 0) end
-        return Vector3.new(c.X - me.Position.X, 0, c.Z - me.Position.Z), "straight to safe runners (no path)"
+-- the safe zone is a strip and safe runners stand anywhere along it: aim at the NEAREST safe runner and plan to
+-- run OVERSHOOT studs past them, so you cross the line instead of stopping short of it
+local OVERSHOOT = 12
+local lastRunDir
+local function nearestSafeRunner(me)
+    local best, bestD
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and plr:GetAttribute("RunState") == "Safe" and inMatch(plr) then
+            local hrp = rootOf(plr)
+            if hrp then
+                local d = (hrp.Position - me.Position).Magnitude
+                if not bestD or d < bestD then best, bestD = hrp.Position, d end
+            end
+        end
+    end
+    return best
+end
+local function pastIt(me, p)
+    local flat = Vector3.new(p.X - me.Position.X, 0, p.Z - me.Position.Z)
+    if flat.Magnitude < 1 then return p end
+    return p + flat.Unit * OVERSHOOT
+end
+local function runnerDirRaw(me, dt)
+    local c, n = safeRunnersCenter()                                -- also keeps the per-map memory up to date
+    local near = nearestSafeRunner(me)
+    if near then
+        local goal = pastIt(me, near)
+        local d = followRoute(me, goal)
+        if d and d.Magnitude > 1 then return d, string.format("path past the nearest of %d safe runners (%d waypoints)", n, route.points and #route.points or 0) end
+        return Vector3.new(goal.X - me.Position.X, 0, goal.Z - me.Position.Z), "straight past the nearest safe runner"
     end
     local known = safeByMap[mapKey()]
     if known then
-        local g = Vector3.new(known[1], known[2], known[3])
-        local d = followRoute(me, g)
-        if d then return d, "path to this map's remembered safe zone" end
+        local goal = pastIt(me, Vector3.new(known[1], known[2], known[3]))
+        local d = followRoute(me, goal)
+        if d and d.Magnitude > 1 then return d, "path past this map's remembered safe zone" end
     end
     local cd = crowdDir(me, dt)
     if cd then return cd, "following the other runners" end
     if straightDir then return straightDir, "straight ahead (no info yet)" end
     return nil
 end
+local function runnerDir(me, dt)
+    local d, why = runnerDirRaw(me, dt)
+    -- reached the point but the game hasn't marked you safe yet: keep going the same way
+    if (not d or d.Magnitude < 3) and lastRunDir then return lastRunDir, "not safe yet, keep going" end
+    if d and d.Magnitude > 0.5 then lastRunDir = Vector3.new(d.X, 0, d.Z).Unit end
+    return d, why
+end
+connect(LocalPlayer:GetAttributeChangedSignal("RunState"), function()
+    if LocalPlayer:GetAttribute("RunState") ~= "Active" then lastRunDir = nil end
+end)
 
 -- don't get kicked for idling
 pcall(function()
