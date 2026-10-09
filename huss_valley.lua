@@ -530,8 +530,7 @@ end)
 -- ---------------------------------------------------------------- auto ability
 -- Your knife's ability (ghost, clone, ...) as an escape: fired when a catcher with a ready tackle is within
 -- AbilityDist and your dash can't save you (not ready), or right after an auto dodge as a combo.
--- Ability key: read from the game's own ability button text, else learned from your own use (the input you pressed
--- right before an *AbilityReadyAt went up), else E. Saved to king_hub/huss_abilitykey.txt.
+-- Ability key: Q, or learned from your own use (the input you pressed right before an *AbilityReadyAt went up). Saved to king_hub/huss_abilitykey.txt.
 local ABILITY_FILE = "king_hub/huss_abilitykey.txt"
 local ABILITY_ATTRS = {"AbilityReadyAt", "GhostAbilityReadyAt", "CloneAbilityReadyAt"}
 local abilityKey
@@ -541,27 +540,7 @@ pcall(function()
         if name:sub(1, 6) == "Mouse:" then abilityKey = Enum.UserInputType[name:sub(7)] else abilityKey = Enum.KeyCode[name] end
     end
 end)
-if not abilityKey then
-    -- the ability button usually shows its key (a single letter)
-    pcall(function()
-        for _, gname in ipairs({"AbilityControls", "KnifeAbilityHUD", "GhostAbilityHUD"}) do
-            local g = LocalPlayer.PlayerGui:FindFirstChild(gname)
-            if g then
-                for _, d in ipairs(g:GetDescendants()) do
-                    if d:IsA("TextLabel") or d:IsA("TextButton") then
-                        local t = (d.Text or ""):gsub("%s", ""):upper()
-                        if #t == 1 and Enum.KeyCode[t] and not MOVE_KEYS[Enum.KeyCode[t]] then
-                            abilityKey = Enum.KeyCode[t]
-                            log("auto ability: key read from " .. d:GetFullName())
-                            return
-                        end
-                    end
-                end
-            end
-        end
-    end)
-end
-abilityKey = abilityKey or Enum.KeyCode.E
+abilityKey = abilityKey or Enum.KeyCode.Q          -- Q by default; a different key you use it with is learned
 log("auto ability: key = " .. abilityKey.Name)
 local popping = false
 for _, a in ipairs(ABILITY_ATTRS) do
