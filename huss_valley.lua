@@ -48,7 +48,7 @@ local Cfg = {
     Esp = true, ShowRunners = true, ShowCatchers = true, Names = true, Distance = true, TackleTimer = true,
     Outline = true, Warning = true, WarnDist = 35, MaxDist = 600,
     AutoDodge = true, DodgeTime = 0.22, DodgeDist = 9, Juke = true, JukeTime = 0.45,
-    AutoCatch = true, CatchRange = 7,
+    AutoCatch = true, CatchRange = 7, AutoLeap = true, LeapMin = 8, LeapMax = 18,
     AutoAbility = true, AbilityDist = 12,
 }
 local connections, cleanups = {}, {}
@@ -516,6 +516,35 @@ local function tryCatch(target, hrp, d, how)
         catching = false
     end)
 end
+-- catcher leap (Space): closes the gap to a runner just out of tackle range. Aims at where they'll be,
+-- holds W so the leap goes forward, then the tackle above fires once they're in range.
+local leaps, lastLeap = 0, 0
+local function leapAt(target, hrp, vel, d)
+    catching = true
+    lastLeap = os.clock()
+    local me = myRoot()
+    local lead = math.clamp(d / 40, 0.15, 0.45)                   -- rough flight time
+    local tStart = os.clock()
+    holdKeys({Enum.KeyCode.W})
+    while os.clock() - tStart < 0.1 do
+        aimAt = hrp.Position + vel * lead
+        RunService.RenderStepped:Wait()
+    end
+    pcall(press, dashKey or Enum.KeyCode.Space, true)
+    task.wait(0.05)
+    pcall(press, dashKey or Enum.KeyCode.Space, false)
+    local t2 = os.clock()
+    while os.clock() - t2 < 0.3 do
+        if hrp.Parent then aimAt = hrp.Position + vel * math.max(lead - (os.clock() - t2), 0) end
+        RunService.RenderStepped:Wait()
+    end
+    aimAt = nil
+    holdKeys({})
+    leaps += 1
+    local after = me and (hrp.Position - me.Position).Magnitude or -1
+    log(string.format("auto leap #%d: at %s from %.1f studs (lead %.2fs) -> now %.1f studs away", leaps, target.Name, d, lead, after))
+    catching = false
+end
 connect(RunService.Heartbeat, function(dt)
     if not Cfg.AutoCatch or catching or os.clock() - lastCatch < 0.5 then return end
     if roleOf(LocalPlayer) ~= "Catcher" or not inMatch(LocalPlayer) then return end
@@ -539,7 +568,26 @@ connect(RunService.Heartbeat, function(dt)
             end
         end
     end
-    if best then task.spawn(tryCatch, best, bestHrp, bestD, how) end
+    if best then task.spawn(tryCatch, best, bestHrp, bestD, how) return end
+    -- nobody in tackle range: leap at the closest runner that's just out of it
+    if not Cfg.AutoLeap or os.clock() - lastLeap < 1 then return end
+    local ch = LocalPlayer.Character
+    if ch and ch:GetAttribute("DashReady") == false then return end
+    local lt, lh, lv, ld
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and roleOf(plr) == "Runner" and inMatch(plr) and plr:GetAttribute("RunState") ~= "Safe" then
+            local hrp = rootOf(plr)
+            if hrp then
+                local d = (hrp.Position - me.Position).Magnitude
+                if d >= Cfg.LeapMin and d <= Cfg.LeapMax and (not ld or d < ld) then
+                    local pp = catchPrev[plr]
+                    lt, lh, ld = plr, hrp, d
+                    lv = pp and (hrp.Position - pp) / math.max(dt, 1e-3) or Vector3.zero
+                end
+            end
+        end
+    end
+    if lt then task.spawn(leapAt, lt, lh, lv, ld) end
 end)
 
 -- ---------------------------------------------------------------- auto ability
@@ -686,6 +734,7 @@ toggle("Catcher tackle timer", "TackleTimer")
 toggle("Catcher warning + arrow", "Warning")
 toggle("Auto dodge (dash once to teach the key)", "AutoDodge")
 toggle("Auto catch (when you're the catcher)", "AutoCatch")
+toggle("Auto leap at runners (Space, catcher)", "AutoLeap")
 toggle("Auto ability (escape / after dodge)", "AutoAbility")
 order += 1
 local hint = Instance.new("TextLabel")
