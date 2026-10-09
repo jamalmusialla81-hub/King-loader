@@ -47,7 +47,7 @@ pcall(function() if gethui then GuiParent = gethui() end end)
 local Cfg = {
     Esp = true, ShowRunners = true, ShowCatchers = true, Names = true, Distance = true, TackleTimer = true,
     Outline = true, Warning = true, WarnDist = 35, MaxDist = 600,
-    AutoDodge = true, DodgeTime = 0.35, DodgeDist = 14,
+    AutoDodge = true, DodgeTime = 0.22, DodgeDist = 9, Juke = true, JukeTime = 0.45,
 }
 local connections, cleanups = {}, {}
 local function connect(sig, fn) local c = sig:Connect(fn); connections[#connections + 1] = c; return c end
@@ -296,44 +296,101 @@ local function press(k, down)
     end
 end
 local lastDodge, dodges = 0, 0
-local function dodge(cam, me, cat, catVel, d, tti)
-    if not dashKey then return end
-    dodging = true
-    lastDodge = os.clock()
-    -- sideways from the catcher's path, on the side you're already on
-    local toMe = Vector3.new(me.Position.X - cat.Position.X, 0, me.Position.Z - cat.Position.Z)
-    local path = Vector3.new(catVel.X, 0, catVel.Z)
-    if path.Magnitude < 1 then path = -toMe end
-    local side = Vector3.new(-path.Z, 0, path.X).Unit
-    if side:Dot(toMe) < 0 then side = -side end
-    local dir = (side * 0.85 + (toMe.Magnitude > 0 and toMe.Unit or Vector3.zero) * 0.35).Unit
-    -- turn it into camera-relative WASD
+local wallParams = RaycastParams.new()
+wallParams.FilterType = Enum.RaycastFilterType.Exclude
+local function clearance(from, dir, dist)
+    local ignore = {}
+    for _, pl in ipairs(Players:GetPlayers()) do if pl.Character then ignore[#ignore + 1] = pl.Character end end
+    wallParams.FilterDescendantsInstances = ignore
+    local r = Workspace:Raycast(from, dir * dist, wallParams)
+    return r and (r.Position - from).Magnitude or dist
+end
+-- world direction -> camera-relative WASD keys
+local function keysFor(cam, dir)
     local f = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z).Unit
     local r = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
     local fd, rd = dir:Dot(f), dir:Dot(r)
     local keys = {}
     if fd > 0.35 then keys[#keys + 1] = Enum.KeyCode.W elseif fd < -0.35 then keys[#keys + 1] = Enum.KeyCode.S end
     if rd > 0.35 then keys[#keys + 1] = Enum.KeyCode.D elseif rd < -0.35 then keys[#keys + 1] = Enum.KeyCode.A end
-    local held = {}
-    for _, k in ipairs(keys) do
-        held[k] = UserInputService:IsKeyDown(k)
-        if not held[k] then pcall(press, k, true) end
+    return keys
+end
+local ourKeys = {}               -- keys we are holding down (not you)
+local function holdKeys(keys)
+    local want = {}
+    for _, k in ipairs(keys) do want[k] = true end
+    for k in pairs(ourKeys) do if not want[k] then pcall(press, k, false); ourKeys[k] = nil end end
+    for k in pairs(want) do
+        if not ourKeys[k] and not UserInputService:IsKeyDown(k) then pcall(press, k, true); ourKeys[k] = true end
     end
+end
+cleanups[#cleanups + 1] = function() holdKeys({}) end
+local function keyNames(keys) local n = {} for _, k in ipairs(keys) do n[#n + 1] = k.Name end return table.concat(n, "") end
+
+local function dodge(cam, me, cat, catVel, d, tti, why)
+    if not dashKey then return end
+    dodging = true
+    lastDodge = os.clock()
+    local toMe = Vector3.new(me.Position.X - cat.Position.X, 0, me.Position.Z - cat.Position.Z)
+    local path = Vector3.new(catVel.X, 0, catVel.Z)
+    if path.Magnitude < 1 then path = -toMe end
+    path = path.Unit
+    -- both sideways options; prefer the side you're already on, but never into a wall
+    local sideA = Vector3.new(-path.Z, 0, path.X)
+    local sideB = -sideA
+    if sideA:Dot(toMe) < 0 then sideA, sideB = sideB, sideA end
+    local from = me.Position
+    local clearA, clearB = clearance(from, sideA, 10), clearance(from, sideB, 10)
+    local side = sideA
+    if clearA < 5 and clearB > clearA then side = sideB end
+    local dashDir = (side * 0.9 + path * 0.15).Unit                -- slightly with their run: they can't turn into it
+    local dashKeys = keysFor(cam, dashDir)
+    holdKeys(dashKeys)
     task.wait(0.03)
     pcall(press, dashKey, true)
     task.wait(0.05)
     pcall(press, dashKey, false)
     dodges += 1
-    log(string.format("auto dodge #%d: catcher %.1f studs away, contact in %.2fs, dodge keys %s + %s",
-        dodges, d, tti, (function() local n = {} for _, k in ipairs(keys) do n[#n + 1] = k.Name end return table.concat(n, "") end)(), dashKey.Name))
-    task.delay(0.3, function()
-        for _, k in ipairs(keys) do if not held[k] then pcall(press, k, false) end end
-        dodging = false
-    end)
+    local line = string.format("auto dodge #%d (%s): catcher %.1f studs, contact in %.2fs, side clear %.0f/%.0f studs, dash %s+%s",
+        dodges, why, d, tti, clearA, clearB, keyNames(dashKeys), dashKey.Name)
+    if Cfg.Juke then
+        -- cut back behind them: they're still carrying their speed the other way
+        task.wait(0.18)
+        local back = (-path * 0.8 + side * 0.35).Unit
+        if clearance(from, back, 8) < 3 then back = side end
+        local jukeKeys = keysFor(cam, back)
+        holdKeys(jukeKeys)
+        line ..= ", juke " .. keyNames(jukeKeys)
+        task.wait(Cfg.JukeTime)
+    else
+        task.wait(0.25)
+    end
+    log(line)
+    holdKeys({})
+    dodging = false
 end
 
 local prevPos = {}
 local lastNoKeyLog = 0
+local lunge = {}                 -- catcher -> os.clock() of their last dash / tackle start
+local function watchCatcher(plr)
+    local function hook(ch)
+        if not ch then return end
+        for _, a in ipairs({"DashCount", "LastDashDistance"}) do
+            connect(ch:GetAttributeChangedSignal(a), function() lunge[plr] = os.clock() end)
+        end
+        connect(ch:GetAttributeChangedSignal("MovementState"), function()
+            local st = tostring(ch:GetAttribute("MovementState"))
+            if st:find("Dash") or st:find("Tackle") or st:find("Lunge") or st:find("Dive") then lunge[plr] = os.clock() end
+        end)
+    end
+    hook(plr.Character)
+    connect(plr.CharacterAdded, hook)
+    -- the tackle cooldown starting means they just swung
+    connect(plr:GetAttributeChangedSignal("TackleReadyAt"), function() lunge[plr] = os.clock() end)
+end
+for _, plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then watchCatcher(plr) end end
+connect(Players.PlayerAdded, watchCatcher)
 connect(RunService.Heartbeat, function(dt)
     if not Cfg.AutoDodge or dodging or os.clock() - lastDodge < 0.6 then return end
     if roleOf(LocalPlayer) ~= "Runner" or not inMatch(LocalPlayer) then return end
@@ -354,9 +411,11 @@ connect(RunService.Heartbeat, function(dt)
                 local closing = d > 0 and vel:Dot(rel.Unit) or 0
                 local tti = closing > 1 and d / closing or math.huge
                 local ready = (tonumber(plr:GetAttribute("TackleReadyAt")) or 0) <= now
-                if ready and d < 40 and (tti < Cfg.DodgeTime or (d < Cfg.DodgeDist and closing > 4)) then
+                local committed = lunge[plr] and os.clock() - lunge[plr] < 0.25 and d < 18 and closing > 2
+                local late = ready and (tti < Cfg.DodgeTime or (d < Cfg.DodgeDist and closing > 4))
+                if d < 40 and (committed or late) then
                     if dashKey then
-                        task.spawn(dodge, cam, me, cat, vel, d, tti)
+                        task.spawn(dodge, cam, me, cat, vel, d, tti, committed and "they lunged" or "last moment")
                         return
                     elseif os.clock() - lastNoKeyLog > 5 then
                         lastNoKeyLog = os.clock()
