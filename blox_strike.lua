@@ -898,6 +898,7 @@ local Features = {
     TriggerbotDelay   = 0.08,
     TriggerbotRange   = 300,
     TriggerHeadOnly   = false,
+    TriggerHeard      = true,      -- also fire at hidden enemies where they were just heard (through walls)
     LastShotAt        = 0,
 
     RedWhenSighted    = true,
@@ -1703,6 +1704,31 @@ local function getCrosshairPosition()
     end
 end
 
+-- Hidden (culled) enemies are parked outside the world, so the ray can never hit them. When one was just heard
+-- (heard ESP: footstep / shot / reload position), fire if the crosshair is on that spot. Only fresh sounds count:
+-- after ~1.5 s they could have moved too far for the shot to mean anything.
+local HEARD_FRESH = 1.5
+local function heardTarget(cam, crosshair)
+    local heard = shared.MH_Heard
+    if not (Features.TriggerHeard and heard) then return nil end
+    local now = os.clock()
+    for plr, h in pairs(heard) do
+        if plr.Parent == Players and now - h.t < HEARD_FRESH and not IsTeammate(plr) and IsAlive(plr) then
+            local ch = plr.Character
+            if ch and ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters" then
+                local aim = h.pos + Vector3.new(0, 1.2, 0)                    -- upper chest
+                local sp, on = cam:WorldToViewportPoint(aim)
+                if on and sp.Z > 0 and sp.Z <= Features.TriggerbotRange then
+                    -- about a body width on screen, a bit wider the older the sound is
+                    local px = (2.2 + (now - h.t) * 3) / sp.Z * cam.ViewportSize.Y / (2 * math.tan(math.rad(cam.FieldOfView / 2)))
+                    if (Vector2.new(sp.X, sp.Y) - crosshair).Magnitude <= math.max(px, 4) then return plr, h end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local function TryTriggerOnce()
     if not Features.Triggerbot then return end
     local now = tick()
@@ -1716,9 +1742,20 @@ local function TryTriggerOnce()
     if not myChar then return end
     triggerParams.FilterDescendantsInstances = { myChar }
     local result = workspace:Raycast(ray.Origin, ray.Direction * Features.TriggerbotRange, triggerParams)
-    if not result or not result.Instance then return end
-    local targetPlr = getPlayerFromPart(result.Instance)
-    if not targetPlr then return end
+    local targetPlr = result and result.Instance and getPlayerFromPart(result.Instance)
+    if not targetPlr then
+        local hp, h = heardTarget(cam, crosshair)
+        if hp then
+            Features.LastShotAt = now
+            if shared.MH_Log then shared.MH_Log(string.format("TRIGGER fire at HEARD %s (%s %.1fs ago)", hp.Name, tostring(h.what), os.clock() - h.t)) end
+            pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, true, game, 1)
+                task.wait(0.01)
+                VirtualInputManager:SendMouseButtonEvent(crosshair.X, crosshair.Y, 0, false, game, 1)
+            end)
+        end
+        return
+    end
     if targetPlr == LocalPlayer then return end
     if IsTeammate(targetPlr) then return end
     if not IsAlive(targetPlr) then return end
@@ -2540,6 +2577,7 @@ toggle(VIS_TAB, "Team Check", true, function(v) Features.TeamCheck = v end)
 toggle(COMBAT_TAB, "Big Heads (visual only - does not change real hits)", false, function(v) setBigHeads(v) end)
 toggle(COMBAT_TAB, "Enable Triggerbot", true, function(v) setTriggerbot(v) end)
 toggle(COMBAT_TAB, "Triggerbot: head only", false, function(v) Features.TriggerHeadOnly = v end)
+toggle(COMBAT_TAB, "Triggerbot: shoot heard enemies through walls", true, function(v) Features.TriggerHeard = v end)
 setTriggerbot(true) -- always on at startup
 
 Features.TriggerbotDelay = 0
