@@ -902,6 +902,12 @@ local Features = {
     Silent            = true,      -- silent aim: bullets that you fire land on the target's head
     SilentFov         = 140,       -- screen pixels around the crosshair
     SilentWallCheck   = true,      -- only targets you have a clear line to
+    Aim               = true,      -- mouse aimbot (hold right click or fire)
+    AimFov            = 160,       -- screen pixels
+    AimSmooth         = 0.45,      -- share of the distance covered per frame
+    AimWallCheck      = true,
+    AimHeard          = true,      -- nobody visible: pre-aim where a hidden enemy was just heard
+    AimSticky         = true,
     LastShotAt        = 0,
 
     RedWhenSighted    = true,
@@ -2593,6 +2599,12 @@ toggle(COMBAT_TAB, "Triggerbot: head only", false, function(v) Features.TriggerH
 toggle(COMBAT_TAB, "Triggerbot: shoot heard enemies through walls", true, function(v) Features.TriggerHeard = v end)
 toggle(COMBAT_TAB, "Silent aim (shots you fire hit the head)", true, function(v) Features.Silent = v end)
 toggle(COMBAT_TAB, "Silent aim: wall check", true, function(v) Features.SilentWallCheck = v end)
+toggle(COMBAT_TAB, "Aimbot (hold right click / fire)", true, function(v) Features.Aim = v end)
+toggle(COMBAT_TAB, "Aimbot: wall check", true, function(v) Features.AimWallCheck = v end)
+toggle(COMBAT_TAB, "Aimbot: pre-aim heard enemies", true, function(v) Features.AimHeard = v end)
+toggle(COMBAT_TAB, "Aimbot: stay on target", true, function(v) Features.AimSticky = v end)
+slider(COMBAT_TAB, "Aimbot FOV", 30, 500, 160, function(v) Features.AimFov = v end, function(v) return string.format("%dpx", math.floor(v)) end)
+slider(COMBAT_TAB, "Aimbot strength", 0.1, 1, 0.45, function(v) Features.AimSmooth = v end, function(v) return string.format("%d%%", math.floor(v * 100)) end)
 setTriggerbot(true) -- always on at startup
 
 Features.TriggerbotDelay = 0
@@ -4884,6 +4896,7 @@ shared.MH_Try('Box ESP + gun chams', function()
     local heard = {}          -- player -> {pos, t, what}
     local culledAt = {}       -- player -> os.clock() when they went hidden
     local frozenAt = {}       -- player -> where their body froze when they went hidden
+    local lastLive = {}       -- tracker: player / bot -> last live {pos, t, vel, headOff}
     shared.MH_Heard = heard
     local function unzstd(b)
         local len = buffer.len(b)
@@ -5115,101 +5128,129 @@ shared.MH_Try('Box ESP + gun chams', function()
 
     KING_RENDER(function()
         local cam = workspace.CurrentCamera
-        -- boxes
+        -- ---------- tracker: one best-estimate position per enemy (players + bots) ----------
+        -- live      the real character (the server is sending them)            -> red (bots purple)
+        -- heard     hidden, but a sound / shot / hit / grenade came from them  -> yellow, fades over 4 s
+        -- predicted hidden < 1.2 s: last live position moved along their velocity -> light orange
+        -- lastseen  hidden longer: where they were last                        -> dim orange
+        local now = os.clock()
+        local track = {}
+        local function addEntry(key, name, isBot, ch, isTeam)
+            if isTeam then return end
+            local hrp = ch:FindFirstChild("HumanoidRootPart")
+            local head = ch:FindFirstChild("Head")
+            if not hrp then return end
+            local culled = ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters"
+            local headOff = head and (head.Position - hrp.Position) or Vector3.new(0, 1.5, 0)
+            local e = {key = key, name = name, isBot = isBot, character = ch}
+            if not culled then
+                local lv = lastLive[key]
+                local vel = Vector3.zero
+                if lv then
+                    local dt = now - lv.t
+                    if dt > 0.005 then
+                        local v = (hrp.Position - lv.pos) / dt
+                        if v.Magnitude < 80 then vel = lv.vel:Lerp(v, 0.3) else vel = lv.vel end
+                    else
+                        vel = lv.vel
+                    end
+                end
+                lastLive[key] = {pos = hrp.Position, t = now, vel = vel, headOff = headOff}
+                e.source, e.age, e.root, e.head, e.part, e.vel = "live", 0, hrp.Position, head and head.Position or hrp.Position + headOff, head, vel
+            else
+                local lv = lastLive[key]
+                local h = (not isBot) and heard[key]
+                local off = (lv and lv.headOff) or headOff
+                if h and now - h.t < 4 then
+                    e.source, e.age, e.root = "heard", now - h.t, h.pos
+                    e.what = h.what
+                elseif lv and now - lv.t < 1.2 then
+                    local age = now - lv.t
+                    e.source, e.age, e.root = "predicted", age, lv.pos + lv.vel * math.min(age, 0.8)
+                else
+                    e.source, e.age, e.root = "lastseen", lv and now - lv.t or 0, lv and lv.pos or hrp.Position
+                end
+                e.head = e.root + off
+            end
+            track[#track + 1] = e
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and IsAlive(plr) then
+                local ch = plr.Character
+                local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+                local culled = ch and ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters"
+                -- keep the heard-ESP bookkeeping (accuracy check when they come back)
+                if culled then
+                    if not culledAt[plr] then
+                        culledAt[plr] = now
+                        if hrp then frozenAt[plr] = hrp.Position end
+                    end
+                else
+                    if culledAt[plr] and frozenAt[plr] and hrp and now - culledAt[plr] > 1 then
+                        pcall(shared.MH_HeardCheckReturn, plr, frozenAt[plr], hrp.Position)
+                    end
+                    culledAt[plr], heard[plr], frozenAt[plr] = nil, nil, nil
+                end
+                if ch then addEntry(plr, plr.Name, false, ch, IsTeammate(plr)) end
+            end
+        end
+        for _, m in ipairs(scanBots()) do
+            if m.Parent and not botDead(m) then addEntry(m, "BOT", true, m, botTeammate(m)) end
+        end
+        shared.MH_Track = track
+
+        -- ---------- one box per entry ----------
         local seen = {}
         if boxOn and cam then
-            for _, plr in ipairs(Players:GetPlayers()) do
-                if plr ~= LocalPlayer and IsAlive(plr) and not IsTeammate(plr) then
-                    local ch = plr.Character
-                    local stale = ch.Parent and ch.Parent.Name == "_PVS_CulledCharacters"   -- frozen at the last position the game sent
-                    local head = ch and ch:FindFirstChild("Head")
-                    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-                    -- hidden (culled) players: move the frozen body to the real position from the network snapshots
-                    local shift = Vector3.zero
-                    local heardAge
-                    if stale then
-                        if not culledAt[plr] then
-                            culledAt[plr] = os.clock()
-                            if hrp then frozenAt[plr] = hrp.Position end
+            local camPos = cam.CFrame.Position
+            for _, e in ipairs(track) do
+                local hp, onH = cam:WorldToViewportPoint(e.head + Vector3.new(0, 0.6, 0))
+                local fp, onF = cam:WorldToViewportPoint(e.root - Vector3.new(0, 2.6, 0))
+                if onH and onF and hp.Z > 0 and fp.Z > 0 then
+                    local h = math.abs(fp.Y - hp.Y)
+                    if h >= 6 then
+                        local w = h * 0.55
+                        local f = boxes[e.key] or makeBox(e.key)
+                        local st = f:FindFirstChildOfClass("UIStroke")
+                        local col, tr, tag
+                        if e.source == "live" then
+                            col, tr, tag = e.isBot and Color3.fromRGB(190, 90, 255) or Color3.fromRGB(255, 60, 60), 0, nil
+                        elseif e.source == "heard" then
+                            col, tr, tag = Color3.fromRGB(255, 230, 60), math.clamp(e.age / 4, 0, 0.7), string.format("%s %.1fs", tostring(e.what or "heard"), e.age)
+                        elseif e.source == "predicted" then
+                            col, tr, tag = Color3.fromRGB(255, 190, 90), 0.3, string.format("moving %.1fs", e.age)
+                        else
+                            col, tr, tag = Color3.fromRGB(255, 160, 40), 0.65, string.format("seen %.0fs ago", e.age)
                         end
-                    else
-                        if culledAt[plr] and frozenAt[plr] and hrp and os.clock() - culledAt[plr] > 1 then
-                            pcall(shared.MH_HeardCheckReturn, plr, frozenAt[plr], hrp.Position)
+                        if st then st.Color = col; st.Transparency = tr end
+                        local lbl = f:FindFirstChild("Tag")
+                        if not lbl then
+                            lbl = Instance.new("TextLabel")
+                            lbl.Name = "Tag"
+                            lbl.BackgroundTransparency = 1
+                            lbl.Size = UDim2.new(1, 80, 0, 14)
+                            lbl.Position = UDim2.new(0, -40, 1, 2)
+                            lbl.Font = Enum.Font.GothamBold
+                            lbl.TextSize = 11
+                            lbl.TextStrokeTransparency = 0.4
+                            lbl.Parent = f
                         end
-                        culledAt[plr], heard[plr], frozenAt[plr] = nil, nil, nil
-                    end
-                    if stale and hrp then
-                        local np = net[plr.UserId]
-                        if np and os.clock() - np.t < 1.5 then
-                            local ahead = math.min(os.clock() - np.t, 0.15)
-                            shift = (np.pos + np.vel * ahead) - hrp.Position
-                            stale = false
-                        end
-                    end
-                    -- heard / shot while hidden: draw them where the sound came from
-                    if stale and hrp and heard[plr] and os.clock() - heard[plr].t < 4 then
-                        heardAge = os.clock() - heard[plr].t
-                        shift = heard[plr].pos - hrp.Position
-                    end
-                    if head and hrp then
-                        local hp, onH = cam:WorldToViewportPoint(head.Position + shift + Vector3.new(0, 0.6, 0))
-                        local fp, onF = cam:WorldToViewportPoint(hrp.Position + shift - Vector3.new(0, 2.6, 0))
-                        if onH and onF and hp.Z > 0 and fp.Z > 0 then
-                            local h = math.abs(fp.Y - hp.Y)
-                            if h >= 6 then
-                                local w = h * 0.55
-                                local f = boxes[plr] or makeBox(plr)
-                                local st = f:FindFirstChildOfClass("UIStroke")
-                                if st then
-                                    if heardAge then
-                                        st.Color = Color3.fromRGB(255, 230, 60)                 -- heard: yellow, fading
-                                        st.Transparency = math.clamp(heardAge / 4, 0, 0.75)
-                                    else
-                                        st.Color = stale and Color3.fromRGB(255, 160, 40) or Color3.fromRGB(255, 60, 60)
-                                        st.Transparency = stale and 0.6 or 0
-                                    end
-                                end
-                                f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
-                                f.Size = UDim2.fromOffset(w, h)
-                                f.Visible = true
-                                seen[plr] = true
-                            end
-                        end
+                        local dist = (e.root - camPos).Magnitude
+                        lbl.Text = string.format("%s%s · %dm", e.isBot and "BOT" or e.name, tag and (" · " .. tag) or "", math.floor(dist))
+                        lbl.TextColor3 = col
+                        lbl.TextTransparency = math.min(tr, 0.5)
+                        f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
+                        f.Size = UDim2.fromOffset(w, h)
+                        f.Visible = true
+                        seen[e.key] = true
                     end
                 end
             end
         end
-        -- bots: purple boxes (dim when the game has them parked out of view)
-        if boxOn and cam then
-            for _, m in ipairs(scanBots()) do
-                if m.Parent and not botDead(m) and not botTeammate(m) then
-                    local head = m:FindFirstChild("Head")
-                    local hrp = m:FindFirstChild("HumanoidRootPart")
-                    local culledBot = m.Parent.Name == "_PVS_CulledCharacters"
-                    if head and hrp then
-                        local hp, onH = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.6, 0))
-                        local fp, onF = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.6, 0))
-                        if onH and onF and hp.Z > 0 and fp.Z > 0 then
-                            local h = math.abs(fp.Y - hp.Y)
-                            if h >= 6 then
-                                local w = h * 0.55
-                                local f = boxes[m] or makeBox(m)
-                                local st = f:FindFirstChildOfClass("UIStroke")
-                                if st then st.Color = Color3.fromRGB(190, 90, 255); st.Transparency = culledBot and 0.6 or 0 end
-                                f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
-                                f.Size = UDim2.fromOffset(w, h)
-                                f.Visible = true
-                                seen[m] = true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        for plr, f in pairs(boxes) do
-            if not seen[plr] then
+        for key, f in pairs(boxes) do
+            if not seen[key] then
                 f.Visible = false
-                if typeof(plr) == "Instance" and plr:IsA("Model") and not plr.Parent then f:Destroy(); boxes[plr] = nil end
+                if typeof(key) == "Instance" and key:IsA("Model") and not key.Parent then f:Destroy(); boxes[key] = nil; lastLive[key] = nil end
             end
         end
         -- chams
@@ -5293,20 +5334,15 @@ shared.MH_Try('Silent aim', function()
         if not cam then return nil end
         local c = getCrosshairPosition() or cam.ViewportSize / 2
         local best, bestD
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer and IsAlive(plr) and not IsTeammate(plr) then
-                local ch = plr.Character
-                -- hidden (culled) players are parked outside the world: the server would never accept a hit on them
-                if ch and ch.Parent and ch.Parent.Name ~= "_PVS_CulledCharacters" and not ch:GetAttribute("Invincible") then
-                    local head = ch:FindFirstChild("Head")
-                    if head then
-                        local sp, on = cam:WorldToViewportPoint(head.Position)
-                        if on and sp.Z > 0 then
-                            local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
-                            if d <= Features.SilentFov and (not bestD or d < bestD) and (not Features.SilentWallCheck or clearTo(head)) then
-                                best, bestD = head, d
-                            end
-                        end
+        -- tracker entries that are live (the server is sending them): players and bots
+        for _, e in ipairs(shared.MH_Track or {}) do
+            local head = e.part
+            if e.source == "live" and head and head.Parent and not (e.character and e.character:GetAttribute("Invincible")) then
+                local sp, on = cam:WorldToViewportPoint(head.Position)
+                if on and sp.Z > 0 then
+                    local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+                    if d <= Features.SilentFov and (not bestD or d < bestD) and (not Features.SilentWallCheck or clearTo(head)) then
+                        best, bestD = head, d
                     end
                 end
             end
@@ -5400,6 +5436,98 @@ end)
 --  DEBUG LOG: everything the ESP / triggerbot / players are doing, every 2 s, into king_hub/hub_log.txt
 --  Debug tab: "Copy log to clipboard" copies the last 600 lines so they can be pasted straight into chat.
 -- =============================================================================
+shared.MH_Try('Aimbot', function()
+    -- Mouse aimbot on top of the tracker. Hold right click (aim) or fire. Live targets: the head, with a wall check.
+    -- Nobody live in the circle: optionally pre-aim the freshest heard / predicted spot of a hidden enemy.
+    -- Closed loop: it measures how far a fixed world point moved on screen for the mouse units it sent, so it
+    -- works at any sensitivity / zoom without tuning.
+    if not mousemoverel then shared.MH_Log("aimbot: executor has no mousemoverel") return end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.IgnoreWater = true
+    local function clear(cam, pos, ch)
+        local me = LocalPlayer.Character
+        params.FilterDescendantsInstances = me and {me} or {}
+        local o = cam.CFrame.Position
+        local r = workspace:Raycast(o, pos - o, params)
+        return not r or (ch and r.Instance:IsDescendantOf(ch))
+    end
+    local lock = {key = nil, scale = nil, cmd = nil, ref = nil, refScreen = nil}
+    local lastLog = 0
+    local function aimPoint(e)
+        if e.source == "live" then return e.part and e.part.Position or e.head end
+        return e.root + Vector3.new(0, 1.4, 0)                      -- hidden: chest/neck height of the estimate
+    end
+    KING_KC(RunService.RenderStepped, function()
+        local holding = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+            or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        local cam = workspace.CurrentCamera
+        if not (Features.Aim and holding and cam) or UserInputService:GetFocusedTextBox() then
+            lock.key, lock.cmd, lock.ref = nil, nil, nil
+            return
+        end
+        local c = cam.ViewportSize / 2
+        -- learn mouse units -> pixels from the last command (a fixed world point, so target movement doesn't matter)
+        if lock.cmd and lock.ref then
+            local sp = cam:WorldToViewportPoint(lock.ref)
+            local moved = Vector2.new(sp.X, sp.Y) - lock.refScreen
+            local m2 = lock.cmd.Magnitude
+            if m2 > 2 and moved.Magnitude > 0.5 then
+                local est = moved.Magnitude / m2
+                if est > 0.02 and est < 40 then lock.scale = lock.scale and (lock.scale + (est - lock.scale) * 0.25) or est end
+            end
+            lock.cmd, lock.ref = nil, nil
+        end
+        -- pick a target: sticky first, then live, then heard / predicted
+        local track = shared.MH_Track or {}
+        local best, bestD, bestPt
+        local function consider(e, mul)
+            local pt = aimPoint(e)
+            local sp, on = cam:WorldToViewportPoint(pt)
+            if not (on and sp.Z > 0) then return end
+            local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+            if d > Features.AimFov * mul then return end
+            if e.source == "live" and Features.AimWallCheck and not clear(cam, pt, e.character) then return end
+            if not bestD or d < bestD then best, bestD, bestPt = e, d, Vector2.new(sp.X, sp.Y) end
+        end
+        if Features.AimSticky and lock.key then
+            for _, e in ipairs(track) do
+                if e.key == lock.key and (e.source == "live" or (Features.AimHeard and (e.source == "heard" and e.age < 1.5 or e.source == "predicted"))) then consider(e, 1.6) end
+            end
+        end
+        if not best then
+            for _, e in ipairs(track) do if e.source == "live" then consider(e, 1) end end
+        end
+        if not best and Features.AimHeard then
+            for _, e in ipairs(track) do
+                if (e.source == "heard" and e.age < 1.5) or e.source == "predicted" then consider(e, 1) end
+            end
+        end
+        if not best then lock.key = nil return end
+        lock.key = best.key
+        local delta = bestPt - c
+        if delta.Magnitude < 1.5 then return end
+        local scale = lock.scale or 1
+        local step = delta * Features.AimSmooth / scale
+        local maxStep = lock.scale and 120 or 12                     -- until the sensitivity is measured, small steps
+        if step.Magnitude > maxStep then step = step.Unit * maxStep end
+        local ix, iy = math.round(step.X), math.round(step.Y)
+        if ix == 0 and iy == 0 then return end
+        -- remember a fixed world point straight ahead to measure how far this command turned the camera
+        lock.ref = cam.CFrame.Position + cam.CFrame.LookVector * 50
+        local rs = cam:WorldToViewportPoint(lock.ref)
+        lock.refScreen = Vector2.new(rs.X, rs.Y)
+        lock.cmd = Vector2.new(ix, iy)
+        pcall(mousemoverel, ix, iy)
+        if os.clock() - lastLog > 3 then
+            lastLog = os.clock()
+            shared.MH_Log(string.format("aimbot: on %s (%s%s) %.0fpx off, scale %.2f px/unit",
+                best.isBot and "BOT" or best.name, best.source, best.source ~= "live" and string.format(" %.1fs", best.age) or "", delta.Magnitude, scale))
+        end
+    end)
+    shared.MH_Log("aimbot: ready (hold right click or fire)")
+end)
+
 shared.MH_Try('Debug log', function()
     local TAB = createTab("🛠", "Debug")
     local on = true
