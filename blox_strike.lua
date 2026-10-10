@@ -4808,6 +4808,57 @@ shared.MH_Try('Box ESP + gun chams', function()
         if boxes[plr] then boxes[plr]:Destroy(); boxes[plr] = nil end
     end)
 
+    -- ---------- bots ----------
+    -- Bots are character models with no Player behind them (their snapshot entries have UserId 0), so the
+    -- player loop never sees them. Look for Humanoid models that aren't anyone's Character, refreshed every second.
+    local bots, botsAt, botsLogged = {}, 0, false
+    local function isPlayerChar(m)
+        for _, pl in ipairs(Players:GetPlayers()) do if pl.Character == m then return true end end
+        return false
+    end
+    local function scanBots()
+        if os.clock() - botsAt < 1 then return bots end
+        botsAt = os.clock()
+        local found = {}
+        local function consider(m)
+            if m:IsA("Model") and m ~= workspace.CurrentCamera and m:FindFirstChildOfClass("Humanoid") and m:FindFirstChild("HumanoidRootPart")
+                and not isPlayerChar(m) and m:FindFirstAncestorOfClass("Camera") == nil then
+                found[#found + 1] = m
+            end
+        end
+        local roots = {workspace, RS:FindFirstChild("_PVS_CulledCharacters")}
+        for _, root in ipairs(roots) do
+            if root then
+                for _, c in ipairs(root:GetChildren()) do
+                    consider(c)
+                    if c:IsA("Folder") or (c:IsA("Model") and not c:FindFirstChildOfClass("Humanoid")) then
+                        for _, cc in ipairs(c:GetChildren()) do consider(cc) end
+                    end
+                end
+            end
+        end
+        if not botsLogged and #found > 0 then
+            botsLogged = true
+            local ex = found[1]
+            local attrs = {}
+            for k, v in pairs(ex:GetAttributes()) do attrs[#attrs + 1] = k .. "=" .. tostring(v) end
+            shared.MH_Log(string.format("bot ESP: %d bots, e.g. %s attrs {%s}", #found, ex:GetFullName(), table.concat(attrs, ", ")))
+        end
+        bots = found
+        return bots
+    end
+    local function botDead(m)
+        local h = m:FindFirstChildOfClass("Humanoid")
+        return (h and h.Health <= 0) or m:GetAttribute("Dead") == true
+    end
+    local function botTeammate(m)
+        local t = m:GetAttribute("Team") or m:GetAttribute("Side")
+        local mine = LocalPlayer.Team and LocalPlayer.Team.Name
+        if t and mine then return tostring(t) == mine end
+        local f = m.Parent and m.Parent.Name
+        return f ~= nil and mine ~= nil and f == mine
+    end
+
     -- ---------- gun chams ----------
     local hl, hlModel
     local function killChams()
@@ -5102,8 +5153,38 @@ shared.MH_Try('Box ESP + gun chams', function()
                 end
             end
         end
+        -- bots: purple boxes (dim when the game has them parked out of view)
+        if boxOn and cam then
+            for _, m in ipairs(scanBots()) do
+                if m.Parent and not botDead(m) and not botTeammate(m) then
+                    local head = m:FindFirstChild("Head")
+                    local hrp = m:FindFirstChild("HumanoidRootPart")
+                    local culledBot = m.Parent.Name == "_PVS_CulledCharacters"
+                    if head and hrp then
+                        local hp, onH = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.6, 0))
+                        local fp, onF = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2.6, 0))
+                        if onH and onF and hp.Z > 0 and fp.Z > 0 then
+                            local h = math.abs(fp.Y - hp.Y)
+                            if h >= 6 then
+                                local w = h * 0.55
+                                local f = boxes[m] or makeBox(m)
+                                local st = f:FindFirstChildOfClass("UIStroke")
+                                if st then st.Color = Color3.fromRGB(190, 90, 255); st.Transparency = culledBot and 0.6 or 0 end
+                                f.Position = UDim2.fromOffset((hp.X + fp.X) / 2 - w / 2, hp.Y)
+                                f.Size = UDim2.fromOffset(w, h)
+                                f.Visible = true
+                                seen[m] = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
         for plr, f in pairs(boxes) do
-            if not seen[plr] then f.Visible = false end
+            if not seen[plr] then
+                f.Visible = false
+                if typeof(plr) == "Instance" and plr:IsA("Model") and not plr.Parent then f:Destroy(); boxes[plr] = nil end
+            end
         end
         -- chams
         if not chamsOn or not cam then killChams() return end
