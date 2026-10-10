@@ -5035,7 +5035,7 @@ shared.MH_Try('Box ESP + gun chams', function()
         end
     end)
     task.spawn(function()
-        local function hook(name, fn)
+        local function hook(name, fn, rawValues)
             -- the game also has non-remote objects with these names, so look for the remote itself
             local function find()
                 for _, d in ipairs(RS:GetDescendants()) do
@@ -5046,7 +5046,11 @@ shared.MH_Try('Box ESP + gun chams', function()
             local t0 = os.clock()
             while not r and os.clock() - t0 < 30 do task.wait(2); r = find() end
             if not (r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent"))) then shared.MH_Log("heard ESP: " .. name .. " not found") return end
-            KING_KC(r.OnClientEvent, function(b) if typeof(b) == "buffer" then local v = decode(b); if type(v) == "table" then fn(v) end end end)
+            KING_KC(r.OnClientEvent, function(b)
+                if typeof(b) ~= "buffer" then return end
+                local v = decode(b)
+                if type(v) == "table" or (rawValues and v ~= nil) then fn(v) end
+            end)
             shared.MH_Log("heard ESP: listening to " .. name)
         end
         hook("ReplicateSound", function(v)
@@ -5082,6 +5086,28 @@ shared.MH_Try('Box ESP + gun chams', function()
                 end
             end)
         end
+        -- you got hit: the payload is the attacker's position (the game turns it into the red damage arrow)
+        hook("CreateDamageIndicator", function(v)
+            if typeof(v) == "Vector3" then
+                hs.got += 1
+                shared.MH_Log(string.format("heard: hit from (%.0f,%.0f,%.0f)", v.X, v.Y, v.Z))
+                pin(v, "shot you")
+            end
+        end, true)
+        -- grenade thrown: the game spawns the grenade model (tag "Grenade") at the thrower's hand
+        pcall(function()
+            local CS = game:GetService("CollectionService")
+            KING_KC(CS:GetInstanceAddedSignal("Grenade"), function(g)
+                task.defer(function()
+                    local ok, cf = pcall(function() return g:GetPivot() end)
+                    if ok and cf then
+                        hs.got += 1
+                        pin(cf.Position, "grenade " .. tostring(g:GetAttribute("GrenadeName") or ""))
+                    end
+                end)
+            end)
+            shared.MH_Log("heard ESP: watching grenade throws")
+        end)
         hook("CreateTracer", function(v)
             if typeof(v.Origin) == "Vector3" then hs.got += 1; pin(v.Origin, "shot") end
         end)
