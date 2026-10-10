@@ -908,6 +908,7 @@ local Features = {
     AimWallCheck      = true,
     AimHeard          = true,      -- nobody visible: pre-aim where a hidden enemy was just heard
     AimSticky         = true,
+    AimHuman          = 60,        -- humaniser 0-100: reaction delay, wandering aim point, uneven speed, tiny jitter
     LastShotAt        = 0,
 
     RedWhenSighted    = true,
@@ -2605,6 +2606,7 @@ toggle(COMBAT_TAB, "Aimbot: pre-aim heard enemies", true, function(v) Features.A
 toggle(COMBAT_TAB, "Aimbot: stay on target", true, function(v) Features.AimSticky = v end)
 slider(COMBAT_TAB, "Aimbot FOV", 30, 500, 160, function(v) Features.AimFov = v end, function(v) return string.format("%dpx", math.floor(v)) end)
 slider(COMBAT_TAB, "Aimbot strength", 0.1, 1, 0.45, function(v) Features.AimSmooth = v end, function(v) return string.format("%d%%", math.floor(v * 100)) end)
+slider(COMBAT_TAB, "Aimbot humaniser", 0, 100, 60, function(v) Features.AimHuman = v end, function(v) return string.format("%d%%", math.floor(v)) end)
 setTriggerbot(true) -- always on at startup
 
 Features.TriggerbotDelay = 0
@@ -5453,6 +5455,13 @@ shared.MH_Try('Aimbot', function()
         return not r or (ch and r.Instance:IsDescendantOf(ch))
     end
     local lock = {key = nil, scale = nil, cmd = nil, ref = nil, refScreen = nil}
+    -- humaniser: per target a reaction delay, an aim point that wanders inside the head, a personal speed,
+    -- an ease-in near the target, a random dead zone and a little slow jitter. All scaled by Features.AimHuman.
+    local hum = {key = nil, start = 0, react = 0, speed = 1, off = Vector3.zero, offTo = Vector3.zero, offAt = 0, dead = 2, seed = math.random() * 100}
+    local function newOffset(h, live)
+        local r = (live and 0.35 or 1.2) * h                         -- studs: inside the head / around the estimate
+        return Vector3.new((math.random() - 0.5) * 2 * r, (math.random() - 0.4) * 1.6 * r, (math.random() - 0.5) * 2 * r)
+    end
     local lastLog = 0
     local function aimPoint(e)
         if e.source == "live" then return e.part and e.part.Position or e.head end
@@ -5503,12 +5512,35 @@ shared.MH_Try('Aimbot', function()
                 if (e.source == "heard" and e.age < 1.5) or e.source == "predicted" then consider(e, 1) end
             end
         end
-        if not best then lock.key = nil return end
+        if not best then lock.key = nil; hum.key = nil return end
         lock.key = best.key
+        local h = math.clamp((Features.AimHuman or 0) / 100, 0, 1)
+        local now = os.clock()
+        if hum.key ~= best.key then
+            hum.key, hum.start = best.key, now
+            hum.react = (0.05 + math.random() * 0.13) * h                       -- 50-180 ms before reacting
+            hum.speed = 1 - h * 0.35 + math.random() * h * 0.3                   -- this "flick" is a bit faster or slower
+            hum.off = newOffset(h, best.source == "live"); hum.offTo = hum.off; hum.offAt = now
+            hum.dead = 1.5 + math.random() * 2.5 * h
+        end
+        if now - hum.start < hum.react then return end
+        -- wander the aim point slowly inside the head
+        if now - hum.offAt > 0.4 + math.random() * 0.6 then hum.offTo = newOffset(h, best.source == "live"); hum.offAt = now end
+        hum.off = hum.off:Lerp(hum.offTo, 0.06)
+        if h > 0 then
+            local sp = cam:WorldToViewportPoint(aimPoint(best) + hum.off)
+            if sp.Z > 0 then bestPt = Vector2.new(sp.X, sp.Y) end
+        end
         local delta = bestPt - c
-        if delta.Magnitude < 1.5 then return end
+        -- slow, smooth jitter (a hand isn't perfectly still)
+        if h > 0 then
+            delta += Vector2.new(math.noise(now * 2.3, hum.seed), math.noise(hum.seed, now * 2.1)) * 2.2 * h
+        end
+        if delta.Magnitude < hum.dead then return end
         local scale = lock.scale or 1
-        local step = delta * Features.AimSmooth / scale
+        -- ease in: full speed far away, gentler in the last ~25 px (less robotic snapping onto the head)
+        local ease = 1 - h * 0.45 * math.clamp(1 - delta.Magnitude / 25, 0, 1)
+        local step = delta * Features.AimSmooth * hum.speed * ease / scale
         local maxStep = lock.scale and 120 or 12                     -- until the sensitivity is measured, small steps
         if step.Magnitude > maxStep then step = step.Unit * maxStep end
         local ix, iy = math.round(step.X), math.round(step.Y)
